@@ -40,6 +40,7 @@
       b.dataset.voice = id;
       const label = VOICE_LABELS[id] || id;
       b.textContent = label; b.title = id;
+      b.classList.add(/^F/i.test(id) ? "f" : /^M/i.test(id) ? "m" : "x");
       if (id === voice) b.classList.add("on");
       b.onclick = () => {
         voice = id;
