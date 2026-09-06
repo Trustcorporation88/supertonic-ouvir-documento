@@ -110,6 +110,12 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
 # ---------------------------------------------------------------------------
 # Extração de texto
 # ---------------------------------------------------------------------------
+def _has(module: str) -> bool:
+    import importlib.util
+
+    return importlib.util.find_spec(module) is not None
+
+
 def _clean_text(text: str) -> str:
     text = text.replace("\r\n", "\n").replace("\r", "\n")
     text = re.sub(r"[ \t]+", " ", text)
@@ -288,7 +294,14 @@ def build_app() -> FastAPI:
     @app.get("/health", include_in_schema=False)
     async def health():
         ready = bool(getattr(state, "is_ready", False) and state.tts is not None)
-        return {"status": "ok" if ready else "loading", "model": MODEL, "service": "supertonic"}
+        return {
+            "status": "ok" if ready else "loading",
+            "model": MODEL,
+            "service": "supertonic",
+            "document": _has("pypdf") and _has("docx"),
+            "ocr": _has("pytesseract") and shutil.which("tesseract") is not None,
+            "video": _has("faster_whisper") and (shutil.which("ffmpeg") is not None),
+        }
 
     @app.get("/api/voices", include_in_schema=False)
     async def voices():
