@@ -56,7 +56,7 @@
       <div class="drop" id="drop" tabindex="0" role="button" aria-label="Escolher arquivo">
         <svg class="drop-icon" viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5M12 3v12"/></svg>
         <strong>Toque ou solte o arquivo aqui</strong>
-        <span>PDF, Word, TXT, imagem, vídeo ou áudio · até <span id="max-mb">60</span> MB</span>
+        <span>PDF, Word, TXT, imagem, áudio ou vídeo · até <span id="max-mb">60</span> MB</span>
         <div class="file-chip" id="fname" hidden>
           <span id="fname-text"></span>
           <button type="button" id="fclear" aria-label="Remover arquivo">×</button>
@@ -81,7 +81,7 @@
     <section class="options">
       <div class="opt-head">
         <label id="voice-label">Voz</label>
-        <button class="link" id="preview-voice" type="button">▶ Ouvir amostra</button>
+        <button class="link" id="preview-voice" type="button">Ouvir amostra</button>
       </div>
       <div class="voices" id="voices" role="radiogroup" aria-labelledby="voice-label"></div>
 
@@ -124,7 +124,7 @@
     <section class="result" id="result" hidden>
       <audio id="player" controls preload="auto"></audio>
       <div class="result-actions">
-        <a class="btn primary" id="down" download="supertonic.wav">Baixar áudio</a>
+        <a class="btn primary" id="down" download="supertonic.wav">Baixar</a>
         <button class="btn" id="copy" type="button">Copiar texto</button>
         <button class="btn" id="toggle-text" type="button" aria-expanded="false">Ver texto</button>
       </div>
@@ -142,7 +142,7 @@
   </main>
 
   <footer class="foot">
-    <span>Feito com <a href="https://github.com/supertone-inc/supertonic" target="_blank" rel="noopener">Supertonic TTS</a></span>
+    <span>Supertonic TTS · roda em CPU</span>
     <a href="/docs" target="_blank" rel="noopener">API</a>
   </footer>
 

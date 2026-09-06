@@ -39,7 +39,7 @@
       b.setAttribute("aria-checked", String(id === voice));
       b.dataset.voice = id;
       const label = VOICE_LABELS[id] || id;
-      b.innerHTML = `<span>${label}</span><span class="g">${id}</span>`;
+      b.textContent = label; b.title = id;
       if (id === voice) b.classList.add("on");
       b.onclick = () => {
         voice = id;
@@ -188,7 +188,7 @@
   const previewBtn = $("preview-voice");
   let previewAudio = null;
   previewBtn.onclick = async () => {
-    if (previewAudio) { previewAudio.pause(); previewAudio = null; previewBtn.textContent = "▶ Ouvir amostra"; return; }
+    if (previewAudio) { previewAudio.pause(); previewAudio = null; previewBtn.textContent = "Ouvir amostra"; return; }
     previewBtn.disabled = true;
     previewBtn.textContent = "…";
     try {
@@ -201,12 +201,12 @@
       if (!r.ok) throw new Error((await r.json().catch(() => ({}))).error?.message || "Falhou.");
       const url = URL.createObjectURL(await r.blob());
       previewAudio = new Audio(url);
-      previewBtn.textContent = "■ Parar";
-      previewAudio.onended = () => { previewBtn.textContent = "▶ Ouvir amostra"; previewAudio = null; URL.revokeObjectURL(url); };
+      previewBtn.textContent = "Parar";
+      previewAudio.onended = () => { previewBtn.textContent = "Ouvir amostra"; previewAudio = null; URL.revokeObjectURL(url); };
       await previewAudio.play();
     } catch (e) {
       say(e.message, "err");
-      previewBtn.textContent = "▶ Ouvir amostra";
+      previewBtn.textContent = "Ouvir amostra";
     } finally {
       previewBtn.disabled = false;
     }
@@ -309,6 +309,9 @@
     preview.hidden = true;
     toggleText.textContent = "Ver texto";
     truncatedEl.hidden = true;
+    progress.hidden = true;
+    fill.classList.remove("indet");
+    fill.style.width = "0%";
     if (lastUrl) { lastUrl = null; }
     go.disabled = true;
     say("");
