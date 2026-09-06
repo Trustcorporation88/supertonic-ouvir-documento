@@ -1,11 +1,12 @@
 FROM python:3.12-slim
 
-# ffmpeg só é necessário para transcrição (aba Vídeo / arquivos de mídia).
+# WITH_TRANSCRIBE=1 habilita transcrição (ffmpeg + faster-whisper + yt-dlp)
+# e OCR de imagens (tesseract por/eng + pytesseract).
 ARG WITH_TRANSCRIBE=0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
-    $( [ "$WITH_TRANSCRIBE" = "1" ] && echo ffmpeg ) \
+    $( [ "$WITH_TRANSCRIBE" = "1" ] && echo ffmpeg tesseract-ocr tesseract-ocr-por tesseract-ocr-eng ) \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -17,7 +18,8 @@ RUN pip install --no-cache-dir -r requirements.txt \
 ENV HF_HOME=/data/hf \
     PYTHONUNBUFFERED=1 \
     SUPERSONIC_MODEL=supertonic-3 \
-    DEFAULT_LANG=pt
+    DEFAULT_LANG=pt \
+    TESSERACT_LANG=por+eng
 
 COPY start.sh server.py ./
 COPY static ./static

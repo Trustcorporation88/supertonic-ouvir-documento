@@ -10,7 +10,7 @@ usando o [Supertonic TTS](https://github.com/supertone-inc/supertonic) (ONNX, ro
 - 🎧 **10 vozes** (5 femininas, 5 masculinas) com prévia de cada uma
 - 🌗 **Tema claro/escuro**, layout responsivo, instalável como app (PWA)
 - 📄 Lê **PDF, DOCX, TXT/MD/CSV/HTML, SRT/VTT**
-- 🎬 **Transcreve áudio/vídeo e links** (YouTube, MP4…) — opcional, via `faster-whisper` + `yt-dlp`
+- 🎬 **Transcreve áudio/vídeo e links** (YouTube, MP4…) e faz **OCR de imagens** — opcional, via `faster-whisper` + `yt-dlp` + `tesseract`
 - ⚡ Velocidade (0.7×–2×), idioma, barra de progresso, histórico da sessão, `Ctrl+Enter`
 - 🔐 API `/v1/*` compatível com OpenAI (`POST /v1/audio/speech`) protegida por `API_KEY`
 
@@ -19,7 +19,7 @@ usando o [Supertonic TTS](https://github.com/supertone-inc/supertonic) (ONNX, ro
 ```bash
 python -m venv .venv && source .venv/bin/activate
 pip install -r requirements.txt
-# opcional (aba Vídeo / arquivos de mídia): precisa de ffmpeg no sistema
+# opcional (vídeo/áudio/OCR): precisa de ffmpeg e tesseract-ocr no sistema
 pip install -r requirements-transcribe.txt
 
 cp .env.example .env   # edite API_KEY
@@ -34,7 +34,7 @@ Na primeira execução o modelo (~ centenas de MB) é baixado para `HF_HOME` (pa
 1. Crie um projeto a partir deste repositório (o `railway.toml` já aponta para o `Dockerfile`).
 2. Em **Variables**, defina `API_KEY` (e, se quiser, `DEFAULT_LANG`, `MAX_UPLOAD_MB`…).
 3. Monte um **Volume** em `/data` para não baixar o modelo a cada deploy.
-4. Para habilitar transcrição, no serviço → Settings → **Build Args**: `WITH_TRANSCRIBE=1`.
+4. Para habilitar transcrição e OCR, em **Variables** adicione `WITH_TRANSCRIBE=1` (o Railway repassa como build arg ao Dockerfile).
 
 ## Rotas
 

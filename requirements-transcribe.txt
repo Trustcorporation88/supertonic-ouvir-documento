@@ -1,4 +1,7 @@
-# Opcional: transcrição de áudio/vídeo e download de links (aba Vídeo).
+# Opcional: transcrição de áudio/vídeo, download de links e OCR de imagens.
 # Aumenta bastante a imagem (~1 GB). Instale com:  pip install -r requirements-transcribe.txt
+# Requer no sistema: ffmpeg, tesseract-ocr (+ tesseract-ocr-por)
 faster-whisper>=1.0
 yt-dlp>=2024.8.6
+pytesseract>=0.3.10
+pillow>=10.0
