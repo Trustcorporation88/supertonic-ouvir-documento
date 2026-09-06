@@ -1,0 +1,12 @@
+.git
+.gitignore
+*.md
+__pycache__
+*.pyc
+.venv
+venv
+.env
+*.wav
+*.bin
+.api_key.local
+*.local

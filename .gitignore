@@ -1,0 +1,22 @@
+# segredos
+.env
+.env.*
+.api_key.local
+*.local
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# saídas de teste
+*.wav
+*.bin
+*.mp3
+*.flac
+*.ogg
+
+# modelos baixados
+hf/
+data/

@@ -1,0 +1,4 @@
+# Opcional: transcrição de áudio/vídeo e download de links (aba Vídeo).
+# Aumenta bastante a imagem (~1 GB). Instale com:  pip install -r requirements-transcribe.txt
+faster-whisper>=1.0
+yt-dlp>=2024.8.6
