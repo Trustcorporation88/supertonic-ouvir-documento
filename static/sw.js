@@ -1,5 +1,5 @@
 // Service worker mínimo: cacheia só a casca da UI (nunca /usar nem /v1).
-const CACHE = "supertonic-shell-v1";
+const CACHE = "supertonic-shell-v2";
 const SHELL = ["/", "/static/styles.css", "/static/app.js", "/favicon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {

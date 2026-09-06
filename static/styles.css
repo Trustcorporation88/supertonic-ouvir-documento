@@ -186,6 +186,7 @@ html[data-theme="light"] .link { color: var(--acc); }
 
 .grid2 { display: grid; grid-template-columns: 1fr; gap: 16px 20px; margin-top: 22px; }
 @media (min-width: 480px) { .grid2 { grid-template-columns: 1fr 1fr; } }
+@media (min-width: 640px) { .grid2 { grid-template-columns: 1.2fr 1fr 1fr; } }
 .field label { display: flex; justify-content: space-between; }
 .field output { color: var(--acc-2); font-variant-numeric: tabular-nums; }
 html[data-theme="light"] .field output { color: var(--acc); }
@@ -235,8 +236,14 @@ audio { width: 100%; display: block; height: 40px; }
 .btn.primary:hover { background: var(--acc-2); }
 .text {
   white-space: pre-wrap; background: transparent; border-top: 1px solid var(--line);
-  padding: 12px 2px 0; max-height: 260px; overflow: auto; margin-top: 12px; font-size: .9rem; color: var(--muted); line-height: 1.6;
+  padding: 12px 2px 0; max-height: 300px; overflow: auto; margin-top: 12px; font-size: .9rem; color: var(--muted); line-height: 1.7;
 }
+.text .chunk { border-radius: 4px; padding: 1px 0; transition: background .2s, color .2s; opacity: .55; }
+.text .chunk.ready { opacity: 1; cursor: pointer; }
+.text .chunk.ready:hover { background: var(--acc-soft); }
+.text .chunk.now { background: var(--acc-soft); color: var(--text); box-shadow: 0 0 0 2px var(--acc-soft); }
+.btn[aria-disabled="true"] { opacity: .55; pointer-events: none; }
+.progress .hint { margin-top: 6px; font-size: .8rem; }
 
 /* ---------- History ---------- */
 .history { margin-top: 36px; }
