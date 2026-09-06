@@ -60,6 +60,10 @@
   langEl.onchange = () => localStorage.setItem("supertonic.lang", langEl.value);
   if (localStorage.getItem("supertonic.format")) formatEl.value = localStorage.getItem("supertonic.format");
   formatEl.onchange = () => localStorage.setItem("supertonic.format", formatEl.value);
+  const pauseEl = $("pause"), pauseOut = $("pause-out"), pagesField = $("pages-field"), pagesEl = $("pages");
+  pauseEl.value = localStorage.getItem("supertonic.pause") || "0.6";
+  pauseOut.textContent = parseFloat(pauseEl.value).toFixed(1) + "s";
+  pauseEl.oninput = () => { pauseOut.textContent = parseFloat(pauseEl.value).toFixed(1) + "s"; localStorage.setItem("supertonic.pause", pauseEl.value); };
 
   let MAX_MB = 60;
 
@@ -116,6 +120,8 @@
     fname.hidden = !f;
     fnameText.textContent = f ? `${f.name} · ${fmtBytes(f.size)}` : "";
     drop.classList.toggle("has", !!f);
+    pagesField.hidden = !(f && /\.pdf$/i.test(f.name));
+    if (!f) pagesEl.value = "";
     if (f) say("");
   }
   drop.onclick = (e) => { if (!e.target.closest("#fclear")) fileEl.click(); };
@@ -241,6 +247,24 @@
     try { await navigator.clipboard.writeText(lastText); copyBtn.textContent = "Copiado ✓"; } catch { copyBtn.textContent = "Não deu para copiar"; }
     setTimeout(() => (copyBtn.textContent = "Copiar texto"), 1600);
   };
+  const shareBtn = $("share");
+  let shareJobId = null;
+  shareBtn.onclick = async () => {
+    if (!shareJobId) return;
+    shareBtn.disabled = true; shareBtn.textContent = "Gerando link…";
+    try {
+      const fd = new FormData(); fd.append("title", (lastText || "").slice(0, 80));
+      const j = await (await api(`/api/jobs/${shareJobId}/share`, { method: "POST", body: fd })).json();
+      let copied = false;
+      try { await navigator.clipboard.writeText(j.url); copied = true; } catch {}
+      if (navigator.share && !copied) { try { await navigator.share({ title: "Áudio do SuperTonic", url: j.url }); } catch {} }
+      shareBtn.textContent = copied ? "Link copiado ✓" : "Link criado";
+      say(`Link válido por 24 h: ${j.url}`, "ok");
+    } catch (e) { shareBtn.textContent = "Compartilhar"; say(e.message, "err"); }
+    finally { shareBtn.disabled = false; setTimeout(() => (shareBtn.textContent = "Compartilhar"), 2500); }
+  };
+  function setShare(jobId) { shareJobId = jobId; shareBtn.disabled = !jobId; shareBtn.textContent = "Compartilhar"; }
+
   function setDownload(url, filename) {
     if (url) { down.href = url; down.download = filename; down.textContent = "Baixar " + filename.split(".").pop().toUpperCase(); down.removeAttribute("aria-disabled"); }
     else { down.removeAttribute("href"); down.textContent = "Preparando arquivo…"; down.setAttribute("aria-disabled", "true"); }
@@ -290,7 +314,7 @@
       li.querySelector(".play").onclick = () => {
         play.active = false; play.urls = []; play.total = null;
         renderChunks(h.chunks || [h.text]); play.spans.forEach((s) => s.classList.add("ready"));
-        lastText = h.text; player.src = urlFor(h); setDownload(urlFor(h), h.filename);
+        lastText = h.text; player.src = urlFor(h); setDownload(urlFor(h), h.filename); setShare(h.id && h.when > Date.now() - 3 * 3600e3 ? h.id : null);
         result.hidden = false; preview.hidden = false; toggleText.textContent = "Ocultar texto";
         player.play().catch(() => {});
         result.scrollIntoView({ behavior: "smooth", block: "nearest" });
@@ -317,10 +341,12 @@
     result.hidden = true; truncatedEl.hidden = true; resetProgress(); say("");
     play.active = false; play.urls = []; play.index = -1; play.total = null; play.waiting = false;
     player.pause(); player.removeAttribute("src");
-    setDownload(null);
+    setDownload(null); setShare(null);
 
     const body = new FormData();
     body.append("voice", voice); body.append("lang", langEl.value); body.append("speed", speedEl.value); body.append("response_format", formatEl.value);
+    body.append("pause", pauseEl.value);
+    if (mode === "file" && chosen && /\.pdf$/i.test(chosen.name) && pagesEl.value.trim()) body.append("pages", pagesEl.value.trim());
     let title = "";
     if (mode === "file") {
       if (!chosen) return say("Escolha um arquivo.", "err");
@@ -374,7 +400,8 @@
           setDownload(url, filename);
           if (!play.active) { player.src = url; play.spans.forEach((s) => s.classList.add("ready")); }
           const took = ((performance.now() - t0) / 1000).toFixed(1);
-          say(`Pronto · ${fmtDur(j.duration)} de áudio · ${fmtBytes(blob.size)} · ${took}s`, "ok");
+          setShare(job.id);
+          say(`Pronto · ${fmtDur(j.duration)} de áudio · ${fmtBytes(blob.size)} · ${took}s${j.cached ? " · do cache ⚡" : ""}`, "ok");
           await dbPut({ id: job.id, title, voice, duration: j.duration, text: j.text, chunks: j.chunks, filename, blob, when: Date.now() });
           renderHistory();
           break;

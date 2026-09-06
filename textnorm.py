@@ -87,7 +87,7 @@ _URL = re.compile(r"(https?://|www\.)\S+", re.I)
 _EMAIL = re.compile(r"[\w.+-]+@[\w-]+\.[\w.-]+")
 _HYPHEN_BREAK = re.compile(r"(\w)-\n(?=[a-záéíóúãõçà])")
 _SOFT_BREAK = re.compile(r"(?<![.!?:;\n])\n(?!\n)")
-_PAGE_NUM = re.compile(r"^\s*(página\s+)?\d{1,4}(\s*(de|/)\s*\d{1,4})?\s*$", re.I)
+_PAGE_NUM = re.compile(r"^\s*(p[áa]g(ina|\.)?\s*)?\d{1,4}(\s*(de|/|-)\s*\d{1,4})?\s*$", re.I)
 
 
 def clean_layout(text: str) -> str:
@@ -113,7 +113,9 @@ def strip_repeated_lines(pages: List[str], min_pages: int = 3) -> List[str]:
         counter: Counter = Counter()
         for p in pages:
             for l in set(edge_lines(p)):
-                counter[re.sub(r"\d+", "#", l.lower())] += 1
+                # chave exata (só remove o que se repete literalmente, ex.: título do documento);
+                # números de página variáveis são tratados por _PAGE_NUM abaixo.
+                counter[re.sub(r"\s+", " ", l.lower())] += 1
         threshold = max(min_pages, int(len(pages) * 0.3))
         repeated = {k for k, c in counter.items() if c >= threshold and len(k) < 120}
 
@@ -122,7 +124,7 @@ def strip_repeated_lines(pages: List[str], min_pages: int = 3) -> List[str]:
         kept = []
         for l in p.split("\n"):
             ls = l.strip()
-            if ls and re.sub(r"\d+", "#", ls.lower()) in repeated:
+            if ls and re.sub(r"\s+", " ", ls.lower()) in repeated:
                 continue
             if _PAGE_NUM.match(ls or "x"):
                 continue
@@ -289,6 +291,10 @@ def split_chunks(text: str, first: int = 110, size: int = 380, hard: int = 900) 
             cur = ""
             limit = size
         cur += s
+        if s.endswith("\n\n"):  # fim de parágrafo sempre fecha o bloco (pausa + destaque por parágrafo)
+            chunks.append(cur)
+            cur = ""
+            limit = size
     if cur.strip():
         chunks.append(cur)
     return chunks

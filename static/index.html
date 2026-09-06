@@ -62,6 +62,10 @@
           <button type="button" id="fclear" aria-label="Remover arquivo">×</button>
         </div>
       </div>
+      <div class="field pages-field" id="pages-field" hidden>
+        <label for="pages">Páginas do PDF <span class="opt">(opcional)</span></label>
+        <input id="pages" type="text" inputmode="numeric" placeholder="ex.: 3-10, 12 · vazio = todas" autocomplete="off" />
+      </div>
       <input id="file" type="file" accept=".pdf,.docx,.txt,.md,.csv,.html,.srt,.vtt,.png,.jpg,.jpeg,.webp,.gif,.mp4,.webm,.mov,.mkv,.mp3,.wav,.m4a,.ogg,.flac" />
     </section>
 
@@ -103,6 +107,10 @@
           </select>
         </div>
         <div class="field">
+          <label for="pause">Pausa entre parágrafos <output id="pause-out" for="pause">0.6s</output></label>
+          <input id="pause" type="range" min="0" max="2" step="0.1" value="0.6" />
+        </div>
+        <div class="field">
           <label for="format">Arquivo</label>
           <select id="format">
             <option value="mp3" selected>MP3 · leve, ideal p/ WhatsApp</option>
@@ -135,6 +143,7 @@
       <audio id="player" controls preload="auto"></audio>
       <div class="result-actions">
         <a class="btn primary" id="down" download="supertonic.mp3" aria-disabled="true">Preparando arquivo…</a>
+        <button class="btn" id="share" type="button" disabled>Compartilhar</button>
         <button class="btn" id="copy" type="button">Copiar texto</button>
         <button class="btn" id="toggle-text" type="button" aria-expanded="true">Ocultar texto</button>
       </div>

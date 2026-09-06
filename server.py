@@ -14,7 +14,10 @@ Rotas próprias (além de /v1/* do ``supertonic serve``):
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import html
 import io
+import json
 import logging
 import os
 import re
@@ -57,7 +60,15 @@ DEFAULT_LANG = os.environ.get("DEFAULT_LANG", "pt")
 MAX_TEXT_CHARS = int(os.environ.get("MAX_TEXT_CHARS", "120000"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "200"))
 JOB_TTL_SECONDS = int(os.environ.get("JOB_TTL_SECONDS", str(3 * 3600)))
-CHUNK_GAP_SECONDS = float(os.environ.get("CHUNK_GAP_SECONDS", "0.35"))
+CHUNK_GAP_SECONDS = float(os.environ.get("CHUNK_GAP_SECONDS", "0.25"))
+DEFAULT_PARAGRAPH_PAUSE = float(os.environ.get("PARAGRAPH_PAUSE", "0.6"))
+RATE_LIMIT_PER_HOUR = int(os.environ.get("RATE_LIMIT_PER_HOUR", "40"))
+CACHE_TTL_SECONDS = int(os.environ.get("CACHE_TTL_SECONDS", str(7 * 24 * 3600)))
+SHARE_TTL_SECONDS = int(os.environ.get("SHARE_TTL_SECONDS", str(24 * 3600)))
+CACHE_DIR = JOBS_DIR / "_cache"
+SHARE_DIR = JOBS_DIR / "_share"
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+SHARE_DIR.mkdir(parents=True, exist_ok=True)
 MP3_BITRATE = os.environ.get("MP3_BITRATE", "64k")
 
 WHISPER_MODEL = os.environ.get("WHISPER_MODEL", "small")
@@ -67,7 +78,7 @@ OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini
 OPENAI_MAX_UPLOAD = 24 * 1024 * 1024  # limite da API é 25 MB
 
 PUBLIC_EXACT = {"/", "/usar", "/api/voices", "/manifest.webmanifest", "/sw.js", "/favicon.svg", "/favicon.ico"}
-PUBLIC_PREFIXES = ("/health", "/docs", "/redoc", "/openapi.json", "/static", "/api/jobs")
+PUBLIC_PREFIXES = ("/health", "/docs", "/redoc", "/openapi.json", "/static", "/api/jobs", "/s")
 
 TEXT_EXT = {".txt", ".md", ".markdown", ".csv", ".json", ".html", ".htm", ".srt", ".vtt"}
 PDF_EXT = {".pdf"}
@@ -133,14 +144,38 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
 # ---------------------------------------------------------------------------
 # Extração de texto
 # ---------------------------------------------------------------------------
-def _extract_pdf(data: bytes) -> str:
+def parse_pages(spec: Optional[str], total: int) -> Optional[List[int]]:
+    """'3-10, 12' → [2..9, 11] (índices zero-based, limitados a ``total``)."""
+    if not spec or not spec.strip():
+        return None
+    out: set = set()
+    for part in re.split(r"[,;\s]+", spec.strip()):
+        if not part:
+            continue
+        m = re.fullmatch(r"(\d+)(?:-(\d+))?", part)
+        if not m:
+            raise UsarError(f"Intervalo de páginas inválido: '{part}'. Use algo como 3-10, 12.", 400, "bad_pages")
+        a = int(m.group(1)); b = int(m.group(2) or a)
+        if a > b:
+            a, b = b, a
+        for n in range(a, b + 1):
+            if 1 <= n <= total:
+                out.add(n - 1)
+    if not out:
+        raise UsarError(f"Nenhuma página válida (o PDF tem {total}).", 400, "bad_pages")
+    return sorted(out)
+
+
+def _extract_pdf(data: bytes, pages_spec: Optional[str] = None) -> str:
     try:
         from pypdf import PdfReader
     except ImportError as e:  # pragma: no cover
         raise UsarError("Leitura de PDF indisponível (pypdf).", 501, "pdf_unavailable") from e
     reader = PdfReader(io.BytesIO(data))
+    wanted = parse_pages(pages_spec, len(reader.pages))
+    selected = [reader.pages[i] for i in wanted] if wanted is not None else list(reader.pages)
     pages: List[str] = []
-    for page in reader.pages:
+    for page in selected:
         try:
             pages.append(page.extract_text() or "")
         except Exception:
@@ -313,11 +348,11 @@ def _download_media(url: str, workdir: str, progress) -> str:
     return str(files[0])
 
 
-def _extract_from_upload(filename: str, data: bytes, lang: Optional[str], progress) -> str:
+def _extract_from_upload(filename: str, data: bytes, lang: Optional[str], progress, pages: Optional[str] = None) -> str:
     ext = Path(filename or "").suffix.lower()
     progress("read", 8, "Lendo o documento…")
     if ext in PDF_EXT:
-        return _extract_pdf(data)
+        return _extract_pdf(data, pages)
     if ext in DOCX_EXT:
         return _extract_docx(data)
     if ext in TEXT_EXT or ext == "":
@@ -355,6 +390,9 @@ class Job:
         self.voice = kw.get("voice", "F1")
         self.lang = kw.get("lang") or DEFAULT_LANG
         self.speed = kw.get("speed")
+        self.pause = kw.get("pause", DEFAULT_PARAGRAPH_PAUSE)
+        self.pages = kw.get("pages")
+        self.cached = False
         self.input = kw  # text | file(name, data) | url
         self.dir = JOBS_DIR / self.id
         self.dir.mkdir(parents=True, exist_ok=True)
@@ -371,7 +409,7 @@ class Job:
             "chunks_ready": self.chunks_ready, "chunk_urls": [f"{base}/chunks/{i}" for i in range(self.chunks_ready)],
             "duration": round(self.duration, 2), "audio_url": f"{base}/audio" if self.final else None,
             "format": self.format, "voice": self.voice, "lang": self.lang, "truncated": self.truncated,
-            "queue_position": QUEUE_POS.get(self.id, 0),
+            "queue_position": QUEUE_POS.get(self.id, 0), "cached": self.cached, "pause": self.pause,
         }
 
 
@@ -384,6 +422,49 @@ def _wav_bytes(wav: np.ndarray, sr: int) -> bytes:
     return encode_audio(wav, sr, "wav")
 
 
+def _cache_key(job: Job) -> str:
+    h = hashlib.sha256()
+    h.update(json.dumps({"t": job.text, "v": job.voice, "l": job.lang, "s": job.speed, "p": job.pause,
+                         "f": job.format, "gap": CHUNK_GAP_SECONDS, "ver": 2}, ensure_ascii=False).encode())
+    return h.hexdigest()[:32]
+
+
+def _restore_from_cache(job: Job, key: str) -> bool:
+    src = CACHE_DIR / key
+    meta = src / "meta.json"
+    if not meta.exists():
+        return False
+    try:
+        m = json.loads(meta.read_text())
+        for i in range(m["n"]):
+            shutil.copyfile(src / f"chunk{i}.wav", job.dir / f"chunk{i}.wav")
+        final_name = f"full.{m['format']}"
+        shutil.copyfile(src / final_name, job.dir / final_name)
+        os.utime(src, None)  # renova o TTL do cache
+    except Exception as e:
+        logger.warning("cache corrompido %s: %s", key, e)
+        shutil.rmtree(src, ignore_errors=True)
+        return False
+    job.chunks, job.chunks_ready, job.duration = m["chunks"], m["n"], m["duration"]
+    job.format, job.final, job.cached = m["format"], str(job.dir / final_name), True
+    job.status, job.stage, job.percent, job.message = "done", "done", 100, "Pronto (do cache)"
+    return True
+
+
+def _save_to_cache(job: Job, key: str) -> None:
+    dst = CACHE_DIR / key
+    tmp = CACHE_DIR / (key + ".tmp")
+    shutil.rmtree(tmp, ignore_errors=True)
+    tmp.mkdir()
+    for i in range(len(job.chunks)):
+        shutil.copyfile(job.dir / f"chunk{i}.wav", tmp / f"chunk{i}.wav")
+    shutil.copyfile(job.final, tmp / f"full.{job.format}")
+    (tmp / "meta.json").write_text(json.dumps({"n": len(job.chunks), "chunks": job.chunks, "duration": job.duration,
+                                              "format": job.format}, ensure_ascii=False))
+    shutil.rmtree(dst, ignore_errors=True)
+    tmp.rename(dst)
+
+
 def _run_job_sync(job: Job, state) -> None:
     sr = state.tts.sample_rate
     inp = job.input
@@ -394,7 +475,7 @@ def _run_job_sync(job: Job, state) -> None:
             text = _transcribe(media, job.lang, job.progress)
     elif inp.get("file"):
         name, data = inp["file"]
-        text = _extract_from_upload(name, data, job.lang, job.progress)
+        text = _extract_from_upload(name, data, job.lang, job.progress, job.pages)
     else:
         text = clean_layout(inp.get("text") or "")
     if not text:
@@ -402,12 +483,17 @@ def _run_job_sync(job: Job, state) -> None:
     if len(text) > MAX_TEXT_CHARS:
         text, job.truncated = text[:MAX_TEXT_CHARS], True
     job.text = text
+
+    # 2) cache
+    key = _cache_key(job)
+    if _restore_from_cache(job, key):
+        return
+
     job.chunks = split_chunks(text)
     job.progress("tts", 50, "Gerando voz…")
 
-    # 2) síntese por blocos
+    # 3) síntese por blocos (pausa maior no fim de parágrafo)
     parts: List[np.ndarray] = []
-    gap = np.zeros(int(sr * CHUNK_GAP_SECONDS), dtype=np.float32)
     total = len(job.chunks)
     for i, chunk in enumerate(job.chunks):
         spoken = normalize_for_tts(chunk, job.lang).strip() or chunk.strip()
@@ -416,16 +502,20 @@ def _run_job_sync(job: Job, state) -> None:
                                       steps=None, max_chunk_length=None, silence_duration=None)
         except UnknownVoice as e:
             raise UsarError(f"Voz desconhecida: {e}", 400, "unknown_voice") from e
-        wav = wav.squeeze(0) if wav.ndim == 2 else wav
+        wav = (wav.squeeze(0) if wav.ndim == 2 else wav).astype(np.float32)
+        if i < total - 1:
+            gap = job.pause if chunk.endswith("\n\n") else CHUNK_GAP_SECONDS
+            wav = np.concatenate([wav, np.zeros(int(sr * gap), dtype=np.float32)])
+            dur += gap
         (job.dir / f"chunk{i}.wav").write_bytes(_wav_bytes(wav, sr))
-        parts.append(wav.astype(np.float32))
-        job.duration += dur + (CHUNK_GAP_SECONDS if i < total - 1 else 0)
+        parts.append(wav)
+        job.duration += dur
         job.chunks_ready = i + 1
         job.progress("tts", 50 + int(45 * (i + 1) / total), f"Gerando voz… bloco {i + 1} de {total}")
 
-    # 3) arquivo final
+    # 4) arquivo final
     job.progress("encode", 96, "Montando o arquivo…")
-    full = np.concatenate([p for pair in zip(parts, [gap] * len(parts)) for p in pair][:-1]) if len(parts) > 1 else parts[0]
+    full = np.concatenate(parts) if len(parts) > 1 else parts[0]
     fmt = job.format
     if fmt == "mp3":
         wav_path = job.dir / "full.wav"
@@ -443,6 +533,10 @@ def _run_job_sync(job: Job, state) -> None:
         out = job.dir / f"full.{fmt}"
         out.write_bytes(encode_audio(full, sr, fmt))
         job.final = str(out)
+    try:
+        _save_to_cache(job, key)
+    except Exception as e:  # pragma: no cover
+        logger.warning("não consegui salvar no cache: %s", e)
     job.status, job.stage, job.percent, job.message = "done", "done", 100, "Pronto"
 
 
@@ -476,6 +570,65 @@ async def _janitor():
             if now - job.created > JOB_TTL_SECONDS:
                 shutil.rmtree(job.dir, ignore_errors=True)
                 JOBS.pop(jid, None)
+        for d in CACHE_DIR.iterdir():
+            if d.is_dir() and now - d.stat().st_mtime > CACHE_TTL_SECONDS:
+                shutil.rmtree(d, ignore_errors=True)
+        for d in SHARE_DIR.iterdir():
+            meta = d / "meta.json"
+            try:
+                exp = json.loads(meta.read_text())["expires"] if meta.exists() else 0
+            except Exception:
+                exp = 0
+            if now > exp:
+                shutil.rmtree(d, ignore_errors=True)
+
+
+# ---------------------------------------------------------------------------
+# Rate limit por IP (janela deslizante de 1 h)
+# ---------------------------------------------------------------------------
+_HITS: Dict[str, List[float]] = {}
+
+
+def _client_ip(request: Request) -> str:
+    xff = request.headers.get("x-forwarded-for")
+    if xff:
+        return xff.split(",")[0].strip()
+    return request.client.host if request.client else "?"
+
+
+def _rate_limited(request: Request) -> Optional[int]:
+    """Devolve segundos até liberar, ou None se pode seguir."""
+    if RATE_LIMIT_PER_HOUR <= 0:
+        return None
+    ip = _client_ip(request)
+    now = time.time()
+    hits = [t for t in _HITS.get(ip, []) if now - t < 3600]
+    if len(hits) >= RATE_LIMIT_PER_HOUR:
+        _HITS[ip] = hits
+        return int(3600 - (now - hits[0])) + 1
+    hits.append(now)
+    _HITS[ip] = hits
+    if len(_HITS) > 5000:  # evita crescer sem limite
+        for k in [k for k, v in _HITS.items() if not v or now - v[-1] > 3600][:1000]:
+            _HITS.pop(k, None)
+    return None
+
+
+def _share_page(meta: Dict[str, Any], token: str) -> str:
+    text = html.escape(meta.get("text", ""))
+    title = html.escape(meta.get("title") or "Áudio do SuperTonic")
+    dur = meta.get("duration", 0)
+    mins, secs = int(dur // 60), int(dur % 60)
+    exp = time.strftime("%d/%m/%Y %H:%M", time.localtime(meta["expires"]))
+    return f"""<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>{title} — SuperTonic</title><link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/static/styles.css">
+<meta property="og:title" content="{title}"><meta property="og:description" content="Áudio de {mins}min {secs:02d}s gerado com SuperTonic">
+</head><body><header class="top"><div class="brand"><img src="/favicon.svg" alt="" width="22" height="22"><span>SuperTonic</span></div><a class="link" href="/">Criar o meu</a></header>
+<main><section class="hero"><h1>{title}</h1><p class="lead">{mins}min {secs:02d}s · {html.escape(meta.get("voice_label", ""))} · link válido até {exp}</p></section>
+<section class="result"><audio controls preload="metadata" src="/s/{token}/audio"></audio>
+<div class="result-actions"><a class="btn primary" href="/s/{token}/audio" download="{html.escape(meta.get("filename", "audio"))}">Baixar</a></div>
+<div class="text" style="max-height:none">{text}</div></section></main>
+<footer class="foot"><span>Supertonic TTS · roda em CPU</span><a href="/">supertonic</a></footer></body></html>"""
 
 
 # ---------------------------------------------------------------------------
@@ -507,7 +660,8 @@ def build_app() -> FastAPI:
             "ocr": _has("pytesseract") and shutil.which("tesseract") is not None,
             "video": bool(FFMPEG) and (bool(OPENAI_KEY) or _has("faster_whisper")),
             "transcriber": "openai" if OPENAI_KEY else ("local" if _has("faster_whisper") else None),
-            "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(),
+            "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(), "rate_limit_per_hour": RATE_LIMIT_PER_HOUR,
+            "share_ttl_hours": SHARE_TTL_SECONDS // 3600, "cache": sum(1 for d in CACHE_DIR.iterdir() if d.is_dir()),
         }
 
     @app.get("/api/voices", include_in_schema=False)
@@ -536,9 +690,15 @@ def build_app() -> FastAPI:
         text: Optional[str] = Form(None), url: Optional[str] = Form(None), voice: str = Form("F1"),
         lang: Optional[str] = Form(None), speed: Optional[float] = Form(None),
         response_format: str = Form("mp3"), file: Optional[UploadFile] = File(None),
+        pause: Optional[float] = Form(None), pages: Optional[str] = Form(None),
     ):
         if state.tts is None:
             return _err(503, "Modelo ainda carregando. Tente em alguns segundos.", "model_loading", "server_error")
+        wait = _rate_limited(request)
+        if wait:
+            return JSONResponse(status_code=429, headers={"Retry-After": str(wait)}, content={"error": {
+                "message": f"Muitas gerações neste IP. Tente de novo em {max(1, wait // 60)} min.",
+                "type": "rate_limit_error", "code": "rate_limited"}})
         fmt = (response_format or "mp3").lower()
         if fmt == "mp3" and "mp3" not in OUTPUT_FORMATS:
             fmt = "wav"
@@ -549,7 +709,9 @@ def build_app() -> FastAPI:
         except UsarError as e:
             return _err(e.status, e.message, e.code)
         _ensure_workers()
-        job = Job(voice=voice or "F1", lang=(lang or DEFAULT_LANG), speed=speed, format=fmt, **inputs)
+        pause_s = DEFAULT_PARAGRAPH_PAUSE if pause is None else max(0.0, min(3.0, float(pause)))
+        job = Job(voice=voice or "F1", lang=(lang or DEFAULT_LANG), speed=speed, format=fmt, pause=pause_s,
+                  pages=(pages or "").strip() or None, **inputs)
         JOBS[job.id] = job
         QUEUE_POS[job.id] = QUEUE.qsize() + 1
         await QUEUE.put(job)
@@ -578,6 +740,54 @@ def build_app() -> FastAPI:
         return FileResponse(job.final, media_type=mime, filename=f"supertonic-{job.id}.{job.format}",
                             headers={"Cache-Control": "private, max-age=86400"})
 
+    @app.post("/api/jobs/{job_id}/share", include_in_schema=False)
+    async def share_job(job_id: str, request: Request, title: Optional[str] = Form(None)):
+        job = JOBS.get(job_id)
+        if not job or not job.final:
+            return _err(404, "Áudio ainda não está pronto.", "not_ready")
+        token = secrets.token_urlsafe(9)
+        d = SHARE_DIR / token
+        d.mkdir(parents=True, exist_ok=True)
+        ext = job.format
+        shutil.copyfile(job.final, d / f"audio.{ext}")
+        expires = time.time() + SHARE_TTL_SECONDS
+        meta = {"text": job.text, "title": (title or "").strip()[:120] or None, "duration": job.duration, "format": ext,
+                "voice_label": job.voice, "filename": f"supertonic-{token}.{ext}", "expires": expires}
+        (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
+        base = str(request.base_url).rstrip("/")
+        if request.headers.get("x-forwarded-proto") == "https":
+            base = "https://" + base.split("://", 1)[1]
+        return {"url": f"{base}/s/{token}", "expires": expires}
+
+    def _share_meta(token: str) -> Optional[Dict[str, Any]]:
+        if not re.fullmatch(r"[A-Za-z0-9_-]{6,32}", token):
+            return None
+        meta = SHARE_DIR / token / "meta.json"
+        if not meta.exists():
+            return None
+        m = json.loads(meta.read_text())
+        if time.time() > m["expires"]:
+            shutil.rmtree(SHARE_DIR / token, ignore_errors=True)
+            return None
+        return m
+
+    @app.get("/s/{token}", include_in_schema=False)
+    async def share_page(token: str):
+        m = _share_meta(token)
+        if not m:
+            return Response("<h1>Link expirado ou inválido.</h1><p><a href='/'>Voltar ao SuperTonic</a></p>",
+                            status_code=404, media_type="text/html")
+        return Response(_share_page(m, token), media_type="text/html")
+
+    @app.get("/s/{token}/audio", include_in_schema=False)
+    async def share_audio(token: str):
+        m = _share_meta(token)
+        if not m:
+            return _err(404, "Link expirado ou inválido.", "not_found")
+        mime = "audio/mpeg" if m["format"] == "mp3" else format_to_mime(m["format"])
+        return FileResponse(SHARE_DIR / token / f"audio.{m['format']}", media_type=mime,
+                            headers={"Cache-Control": "public, max-age=3600"})
+
     @app.delete("/api/jobs/{job_id}", include_in_schema=False)
     async def delete_job(job_id: str):
         job = JOBS.pop(job_id, None)
@@ -592,9 +802,12 @@ def build_app() -> FastAPI:
         text: Optional[str] = Form(None), url: Optional[str] = Form(None), voice: str = Form("F1"),
         lang: Optional[str] = Form(None), speed: Optional[float] = Form(None),
         response_format: str = Form("wav"), file: Optional[UploadFile] = File(None),
+        pages: Optional[str] = Form(None), request: Request = None,
     ):
         if state.tts is None:
             return _err(503, "Modelo ainda carregando.", "model_loading", "server_error")
+        if request is not None and _rate_limited(request):
+            return _err(429, "Muitas gerações neste IP. Aguarde alguns minutos.", "rate_limited", "rate_limit_error")
         fmt = (response_format or "wav").lower()
         if fmt not in SUPPORTED_FORMATS:
             return _err(400, f"Formato inválido. Use: {', '.join(SUPPORTED_FORMATS)}.", "unsupported_response_format")
@@ -609,7 +822,7 @@ def build_app() -> FastAPI:
                 return JSONResponse({"text": content[:MAX_TEXT_CHARS], "truncated": len(content) > MAX_TEXT_CHARS})
             if "file" in inputs:
                 name, data = inputs["file"]
-                content = await asyncio.to_thread(_extract_from_upload, name, data, lang, noop)
+                content = await asyncio.to_thread(_extract_from_upload, name, data, lang, noop, pages)
             else:
                 content = clean_layout(inputs["text"])
             if not content:

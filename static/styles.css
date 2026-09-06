@@ -186,7 +186,12 @@ html[data-theme="light"] .link { color: var(--acc); }
 
 .grid2 { display: grid; grid-template-columns: 1fr; gap: 16px 20px; margin-top: 22px; }
 @media (min-width: 480px) { .grid2 { grid-template-columns: 1fr 1fr; } }
-@media (min-width: 640px) { .grid2 { grid-template-columns: 1.2fr 1fr 1fr; } }
+@media (min-width: 640px) { .grid2 { grid-template-columns: 1fr 1fr; } }
+.pages-field { margin-top: 10px; }
+.pages-field input { width: 100%; border-radius: var(--r); border: 1px solid var(--line); background: var(--card); color: inherit; padding: 10px 14px; font: inherit; outline: none; }
+.pages-field input:focus { border-color: var(--acc-line); box-shadow: 0 0 0 3px var(--acc-soft); }
+label .opt { font-weight: 400; color: var(--muted-2); }
+.btn:disabled { opacity: .5; cursor: default; }
 .field label { display: flex; justify-content: space-between; }
 .field output { color: var(--acc-2); font-variant-numeric: tabular-nums; }
 html[data-theme="light"] .field output { color: var(--acc); }

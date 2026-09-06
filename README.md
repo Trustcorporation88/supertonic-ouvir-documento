@@ -17,6 +17,11 @@ usando o [Supertonic TTS](https://github.com/supertone-inc/supertonic) (ONNX, ro
 - 🎤 **10 vozes** com prévia, velocidade 0.7×–2×, idioma; tema claro/escuro; PWA
 - 📄 Lê **PDF, DOCX, TXT/MD/CSV/HTML, SRT/VTT**
 - 🎬 **Transcreve áudio/vídeo e links** (YouTube, MP4…) — via **OpenAI** (`openai_key`, rápido) com fallback **faster-whisper** local; **OCR de imagens** com tesseract
+- 🔗 **Compartilhar por link** — página pública com player, texto e download; expira em 24 h
+- 📑 **Escolha de páginas do PDF** ("3-10, 12")
+- ⏸️ **Pausa entre parágrafos** ajustável (0–2 s)
+- ♻️ **Cache** — mesmo texto + voz + opções = resposta instantânea (7 dias)
+- 🛡️ **Rate-limit por IP** (40 gerações/hora por padrão)
 - 🔐 API `/v1/*` compatível com OpenAI (`POST /v1/audio/speech`) protegida por `API_KEY`
 
 ## Rodando local
@@ -48,10 +53,12 @@ Na primeira execução o modelo (~ centenas de MB) é baixado para `HF_HOME` (pa
 | GET | `/` | — | Interface web |
 | GET | `/health` | — | `{"status": "ok"\|"loading"}` |
 | GET | `/api/voices` | — | Vozes disponíveis |
-| POST | `/api/jobs` | — | Cria um job. Form-data: `text` **ou** `file` **ou** `url`; `voice`, `lang`, `speed`, `response_format` (`mp3`/`wav`/`ogg`/`flac`). Responde `202` com `{"id", ...}`. |
+| POST | `/api/jobs` | — | Cria um job. Form-data: `text` **ou** `file` **ou** `url`; `voice`, `lang`, `speed`, `response_format` (`mp3`/`wav`/`ogg`/`flac`), `pause` (s entre parágrafos), `pages` (PDF, ex. `3-10,12`). Responde `202` com `{"id", ...}`; `429` se passar do rate-limit. |
 | GET | `/api/jobs/{id}` | — | Progresso: `status`, `stage`, `percent`, `message`, `text`, `chunks[]`, `chunk_urls[]`, `audio_url`, `duration`. |
 | GET | `/api/jobs/{id}/chunks/{n}` | — | WAV do bloco *n* (reprodução progressiva). |
 | GET | `/api/jobs/{id}/audio` | — | Arquivo final. |
+| POST | `/api/jobs/{id}/share` | — | Cria link público `/s/{token}` (24 h). |
+| GET | `/s/{token}` | — | Página de compartilhamento (player + texto + download). |
 | POST | `/usar` | — | Rota síncrona legada (texto/arquivo → áudio com `X-Texto`; `url` → JSON `{"text"}`). |
 | POST | `/v1/tts` | 🔑 | TTS nativo (JSON) |
 | POST | `/v1/audio/speech` | 🔑 | Alias compatível com OpenAI |
@@ -85,6 +92,11 @@ Dockerfile · start.sh · railway.toml
 | `MAX_UPLOAD_MB` / `MAX_TEXT_CHARS` | `200` / `120000` | Limites |
 | `MP3_BITRATE` | `64k` | Qualidade do MP3 |
 | `JOB_TTL_SECONDS` | `10800` | Tempo que os áudios ficam no servidor |
+| `RATE_LIMIT_PER_HOUR` | `40` | Gerações por IP por hora (`0` desliga) |
+| `CACHE_TTL_SECONDS` | `604800` | Validade do cache de áudio (7 dias) |
+| `SHARE_TTL_SECONDS` | `86400` | Validade dos links compartilhados (24 h) |
+| `PARAGRAPH_PAUSE` | `0.6` | Pausa padrão entre parágrafos (s) |
+| `JOBS_DIR` | `/tmp/supertonic-jobs` | Onde ficam jobs, cache e links (use o volume, ex. `/data/jobs`, para sobreviver a deploys) |
 
 ## Licença
 
