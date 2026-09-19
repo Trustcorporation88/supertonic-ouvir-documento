@@ -21,7 +21,7 @@ ENV HF_HOME=/data/hf \
     DEFAULT_LANG=pt \
     TESSERACT_LANG=por+eng
 
-COPY start.sh server.py textnorm.py backend_resources.py document_features.py ./
+COPY start.sh server.py textnorm.py backend_resources.py document_features.py supabase_persistence.py ./
 COPY static ./static
 RUN sed -i 's/\r$//' start.sh server.py textnorm.py && chmod +x start.sh
 

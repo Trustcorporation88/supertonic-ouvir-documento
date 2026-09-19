@@ -47,6 +47,7 @@ from supertonic.server.audio import SUPPORTED_FORMATS, encode_audio, format_to_m
 from supertonic.server.routes import UnknownVoice, _do_synthesize
 
 from backend_resources import BodyLimitMiddleware, Cancelled, ResourceError, save_upload, trusted_peer, run_process
+import supabase_persistence
 
 from textnorm import clean_layout, normalize_for_tts, split_chunks, strip_repeated_lines
 
@@ -624,6 +625,8 @@ async def _worker(state):
             task = asyncio.create_task(asyncio.to_thread(_run_job_sync, job, state))
             try:
                 await asyncio.shield(task)
+                if job.status == "done" and job.final:
+                    asyncio.create_task(supabase_persistence.persist_completed_job(job))
             except asyncio.CancelledError:
                 # to_thread cancellation does not stop its thread. Wait for cooperation
                 # before unlinking uploads or letting the upstream model shut down.
@@ -859,6 +862,10 @@ def build_app() -> FastAPI:
     async def get_job(job_id: str, request: Request):
         job = JOBS.get(job_id)
         if not job:
+            if supabase_persistence.is_enabled():
+                meta = supabase_persistence.get_job_meta(job_id)
+                if meta:
+                    return meta
             return _err(404, "Job não encontrado (expirou?).", "not_found")
         return job.public(request)
 
@@ -872,11 +879,17 @@ def build_app() -> FastAPI:
     @app.get("/api/jobs/{job_id}/audio", include_in_schema=False)
     async def get_audio(job_id: str):
         job = JOBS.get(job_id)
-        if not job or job.status != "done" or not job.final:
-            return _err(404, "Áudio ainda não está pronto.", "not_ready")
-        mime = "audio/mpeg" if job.format == "mp3" else format_to_mime(job.format)
-        return FileResponse(job.final, media_type=mime, filename=f"supertonic-{job.id}.{job.format}",
-                            headers={"Cache-Control": "private, max-age=86400"})
+        if job and job.status == "done" and job.final and Path(job.final).exists():
+            mime = "audio/mpeg" if job.format == "mp3" else format_to_mime(job.format)
+            return FileResponse(job.final, media_type=mime, filename=f"supertonic-{job.id}.{job.format}",
+                                headers={"Cache-Control": "private, max-age=86400"})
+        if supabase_persistence.is_enabled():
+            fmt = job.format if job else "mp3"
+            signed_url = supabase_persistence.get_audio_signed_url(job_id, fmt)
+            if signed_url:
+                from starlette.responses import RedirectResponse
+                return RedirectResponse(signed_url, status_code=307)
+        return _err(404, "Áudio ainda não está pronto.", "not_ready")
 
     @app.post("/api/jobs/{job_id}/share", include_in_schema=False)
     async def share_job(job_id: str, request: Request, title: Optional[str] = Form(None)):
