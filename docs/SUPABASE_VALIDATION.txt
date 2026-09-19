@@ -1,0 +1,38 @@
+SUPABASE BACKEND — VALIDATION RECORD
+Date: 2026-09-19 (UTC)
+Repository base: 74709583001b1122707d7df2e43aab54f048e9df
+
+Executed in isolated sandbox, no real Supabase project accessed/modified:
+
+PYTHONPATH=/home/user/validation:/home/user/repo python -m pytest -q \
+  tests/test_supabase_backend.py tests/test_supabase_sql_local.py
+Result: 40 passed in 2.29s
+Breakdown: 34 mock/static tests + 1 SDK-construction test + 5 temporary PostgreSQL tests.
+
+SDK validated: supabase 2.31.0. Actual sync client construction tested with
+nonfunctional placeholder keys and localhost URL, without network requests.
+Construction uses SyncClientOptions (base ClientOptions is not sufficient).
+
+PostgreSQL tests: pgserver disposable local instance; minimal auth.users,
+auth.uid and storage.buckets stubs. Real SQL migration execution, owner RLS,
+read-only/anon privileges, cross-owner FKs, null-owner rejection, private bucket
+flags, SKIP LOCKED with separately held row lock, lease takeover, stale-token
+rejection, checkpoint and finish. Temporary database removed on teardown.
+
+SQL parser: pglast parsed 31 statements successfully.
+Python: python -m py_compile supabase_backend.py passed.
+Scope: git diff --exit-code -- server.py static requirements.txt
+requirements-transcribe.txt passed (those files were not modified).
+
+Not validated: real Supabase Auth login, real JWT rejection over network,
+PostgREST RPC exposure/schema cache, Storage upload/download/signing, production
+policies/default grants, frontend, route wiring, synthesizer/GPU, deployment,
+actual network clock skew, remote signed-URL token format.
+
+SDK, pglast and pgserver were installed only into an isolated validation target;
+no requirements file was edited. Optional SQL/SDK tests skip if their packages
+are unavailable; reproduce all 40 tests with supabase 2.31.0, pgserver,
+psycopg2-binary and pytest installed in a dedicated virtual environment.
+
+No claim of a complete Supabase integration: the existing server still uses
+its original local/in-memory persistence until deliberately adapted.

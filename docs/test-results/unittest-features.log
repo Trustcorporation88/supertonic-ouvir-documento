@@ -1,0 +1,49 @@
+test_crc_corruption_is_rejected (test_document_features.EpubTests.test_crc_corruption_is_rejected) ... ok
+test_deep_xhtml_does_not_recurse (test_document_features.EpubTests.test_deep_xhtml_does_not_recurse) ... ok
+test_dtd_and_entities_rejected_in_every_xml_layer (test_document_features.EpubTests.test_dtd_and_entities_rejected_in_every_xml_layer) ... ok
+test_duplicate_members_rejected (test_document_features.EpubTests.test_duplicate_members_rejected) ... ok
+test_empty_epub_rejected (test_document_features.EpubTests.test_empty_epub_rejected) ... ok
+test_encryption_flag_and_unsupported_compression_rejected (test_document_features.EpubTests.test_encryption_flag_and_unsupported_compression_rejected) ... ok
+test_excess_entries_rejected_before_zipfile_allocates_objects (test_document_features.EpubTests.test_excess_entries_rejected_before_zipfile_allocates_objects) ... ok
+test_forged_entry_count_rejected_before_zipfile_allocates_objects (test_document_features.EpubTests.test_forged_entry_count_rejected_before_zipfile_allocates_objects) ... ok
+test_heading_fallback_and_hidden_content (test_document_features.EpubTests.test_heading_fallback_and_hidden_content) ... ok
+test_invalid_limits_rejected (test_document_features.EpubTests.test_invalid_limits_rejected) ... ok
+test_limits_cover_archive_entries_member_total_ratio_text_spine (test_document_features.EpubTests.test_limits_cover_archive_entries_member_total_ratio_text_spine) ... ok
+test_malformed_zip_mimetype_xml_members_and_spine (test_document_features.EpubTests.test_malformed_zip_mimetype_xml_members_and_spine) ... ok
+test_nested_and_percent_encoded_safe_paths (test_document_features.EpubTests.test_nested_and_percent_encoded_safe_paths) ... ok
+test_nested_hidden_headings_and_tail_do_not_become_title (test_document_features.EpubTests.test_nested_hidden_headings_and_tail_do_not_become_title) ... ok
+test_nothing_is_extracted_to_disk (test_document_features.EpubTests.test_nothing_is_extracted_to_disk) ... ok
+test_references_cannot_escape_or_use_network (test_document_features.EpubTests.test_references_cannot_escape_or_use_network) ... ok
+test_spine_order_chapters_metadata_and_offsets (test_document_features.EpubTests.test_spine_order_chapters_metadata_and_offsets) ... ok
+test_zip_traversal_absolute_backslash_and_symlink_rejected (test_document_features.EpubTests.test_zip_traversal_absolute_backslash_and_symlink_rejected) ... ok
+test_builds_safe_argv_and_chapter_metadata (test_document_features.M4BTests.test_builds_safe_argv_and_chapter_metadata) ... ok
+test_existing_target_never_overwritten (test_document_features.M4BTests.test_existing_target_never_overwritten) ... ok
+test_fake_success_without_valid_container_is_rejected (test_document_features.M4BTests.test_fake_success_without_valid_container_is_rejected) ... ok
+test_ffmpeg_unavailable (test_document_features.M4BTests.test_ffmpeg_unavailable) ... ok
+test_input_timeout_chapters_and_cover_validation (test_document_features.M4BTests.test_input_timeout_chapters_and_cover_validation) ... ok
+test_metadata_escaping_and_validation (test_document_features.M4BTests.test_metadata_escaping_and_validation) ... ok
+test_optional_cover_mapping (test_document_features.M4BTests.test_optional_cover_mapping) ... ok
+test_output_symlink_not_followed (test_document_features.M4BTests.test_output_symlink_not_followed) ... ok
+test_racing_writer_is_not_overwritten (test_document_features.M4BTests.test_racing_writer_is_not_overwritten) ... ok
+test_timeout_and_process_failure_leave_no_artifacts (test_document_features.M4BTests.test_timeout_and_process_failure_leave_no_artifacts) ... ok
+test_real_m4b_encodes_audio_metadata_chapters_and_cover (test_document_features.RealFFmpegTests.test_real_m4b_encodes_audio_metadata_chapters_and_cover) ... ok
+test_real_m4b_without_cover_or_chapters (test_document_features.RealFFmpegTests.test_real_m4b_without_cover_or_chapters) ... ok
+test_real_timeout_kills_process_and_cleans_up (test_document_features.RealFFmpegTests.test_real_timeout_kills_process_and_cleans_up) ... ok
+test_body_match_protects_the_same_line_at_edge (test_textnorm_features.EdgeCleaningTests.test_body_match_protects_the_same_line_at_edge) ... ok
+test_explicit_page_label_only_removed_at_edge (test_textnorm_features.EdgeCleaningTests.test_explicit_page_label_only_removed_at_edge) ... ok
+test_no_accidental_second_line_header_removal (test_textnorm_features.EdgeCleaningTests.test_no_accidental_second_line_header_removal) ... ok
+test_numbers_in_body_and_edges_are_preserved (test_textnorm_features.EdgeCleaningTests.test_numbers_in_body_and_edges_are_preserved) ... ok
+test_repeated_headers_removed_only_at_outer_edge (test_textnorm_features.EdgeCleaningTests.test_repeated_headers_removed_only_at_outer_edge) ... ok
+test_short_pages_and_empty_pages_preserved (test_textnorm_features.EdgeCleaningTests.test_short_pages_and_empty_pages_preserved) ... ok
+test_brazilian_currency_does_not_match_only_first_three_digits (test_textnorm_features.TextNormalizationTests.test_brazilian_currency_does_not_match_only_first_three_digits) ... ok
+test_existing_date_time_identifiers_and_units (test_textnorm_features.TextNormalizationTests.test_existing_date_time_identifiers_and_units) ... ok
+test_language_aliases (test_textnorm_features.TextNormalizationTests.test_language_aliases) ... ok
+test_legal_abbreviations_are_not_guessed (test_textnorm_features.TextNormalizationTests.test_legal_abbreviations_are_not_guessed) ... ok
+test_optional_num2words_unavailable_keeps_numbers (test_textnorm_features.TextNormalizationTests.test_optional_num2words_unavailable_keeps_numbers) ... ok
+test_roman_only_in_explicit_structural_context (test_textnorm_features.TextNormalizationTests.test_roman_only_in_explicit_structural_context) ... ok
+test_temperature_precedes_ordinals (test_textnorm_features.TextNormalizationTests.test_temperature_precedes_ordinals) ... ok
+
+----------------------------------------------------------------------
+Ran 44 tests in 0.248s
+
+OK
