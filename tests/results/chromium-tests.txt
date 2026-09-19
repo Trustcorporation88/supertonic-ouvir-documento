@@ -1,0 +1,17 @@
+PASS: EPUB UI, PDF page reset, keyboard removal, mobile layout and validation alert
+PASS: Adaptive polling pauses hidden, resumes once, avoids duplicate announcements, cancels and restores focus
+PASS: 503 state/audio recovery, one POST, no extra state downloads after done, download/history and desktop rendering
+PASS: Permanent errors terminate without retries or duplicate submission
+PASS: Remote cancelled state terminates cleanly without looping
+PASS: Unconfirmed DELETE reports uncertainty instead of claiming cancellation
+{
+  "passed": 6,
+  "tests": [
+    "EPUB UI, PDF page reset, keyboard removal, mobile layout and validation alert",
+    "Adaptive polling pauses hidden, resumes once, avoids duplicate announcements, cancels and restores focus",
+    "503 state/audio recovery, one POST, no extra state downloads after done, download/history and desktop rendering",
+    "Permanent errors terminate without retries or duplicate submission",
+    "Remote cancelled state terminates cleanly without looping",
+    "Unconfirmed DELETE reports uncertainty instead of claiming cancellation"
+  ]
+}

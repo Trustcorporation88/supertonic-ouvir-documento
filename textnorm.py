@@ -28,12 +28,12 @@ ABBR_PT = {
     "prof.": "professor", "profa.": "professora", "eng.": "engenheiro",
     "exmo.": "excelentíssimo", "exma.": "excelentíssima", "ilmo.": "ilustríssimo", "ilma.": "ilustríssima",
     "av.": "avenida", "tel.": "telefone", "cel.": "celular", "ltda.": "limitada", "cia.": "companhia",
-    "nº": "número", "n.º": "número", "no.": "número", "num.": "número",
-    "art.": "artigo", "arts.": "artigos", "inc.": "inciso", "§": "parágrafo",
+    "nº": "número", "n.º": "número", "num.": "número",
+    "art.": "artigo", "arts.": "artigos", "§§": "parágrafos", "§": "parágrafo",
     "pág.": "página", "págs.": "páginas", "pp.": "páginas", "cap.": "capítulo",
     "fig.": "figura", "tab.": "tabela", "ref.": "referência", "obs.": "observação",
     "aprox.": "aproximadamente", "p.ex.": "por exemplo", "etc.": "etcétera",
-    "vs.": "versus", "min.": "minutos", "seg.": "segundos", "máx.": "máximo", "mín.": "mínimo",
+    "vs.": "versus", "máx.": "máximo", "mín.": "mínimo",
     "séc.": "século", "a.c.": "antes de Cristo", "d.c.": "depois de Cristo",
     "cnpj": "C N P J", "cpf": "C P F", "cep": "C E P",
     "pdf": "P D F", "url": "U R L", "html": "H T M L", "api": "A P I",
@@ -103,34 +103,40 @@ def clean_layout(text: str) -> str:
 
 
 def strip_repeated_lines(pages: List[str], min_pages: int = 3) -> List[str]:
-    """Remove cabeçalhos/rodapés repetidos entre páginas e números de página soltos."""
-    def edge_lines(p: str) -> List[str]:
-        lines = [l.strip() for l in p.split("\n") if l.strip()]
-        return lines[:2] + lines[-2:]
+    """Remove boilerplate only at actual page edges, never matching body lines.
 
-    repeated: set = set()
-    if len(pages) >= min_pages:
-        counter: Counter = Counter()
-        for p in pages:
-            for l in set(edge_lines(p)):
-                # chave exata (só remove o que se repete literalmente, ex.: título do documento);
-                # números de página variáveis são tratados por _PAGE_NUM abaixo.
-                counter[re.sub(r"\s+", " ", l.lower())] += 1
-        threshold = max(min_pages, int(len(pages) * 0.3))
-        repeated = {k for k, c in counter.items() if c >= threshold and len(k) < 120}
+    Bare numbers are deliberately preserved: a value, year or chapter number
+    cannot reliably be distinguished from a page number without PDF geometry.
+    Short pages (fewer than five nonempty lines) are preserved in their entirety.
+    Repeated candidates that also occur in any page body are preserved.
+    """
+    def key(line: str) -> str:
+        return re.sub(r"\s+", " ", line.strip().casefold())
 
-    out = []
-    for p in pages:
-        kept = []
-        for l in p.split("\n"):
-            ls = l.strip()
-            if ls and re.sub(r"\s+", " ", ls.lower()) in repeated:
-                continue
-            if _PAGE_NUM.match(ls or "x"):
-                continue
-            kept.append(l)
-        out.append("\n".join(kept))
-    return out
+    split = [page.split("\n") for page in pages]
+    indices = [[i for i, line in enumerate(lines) if line.strip()] for lines in split]
+    counter: Counter = Counter()
+    body_keys = set()
+    for lines, idx in zip(split, indices):
+        if len(idx) < 5:
+            body_keys.update(key(lines[i]) for i in idx)
+            continue
+        body_keys.update(key(lines[i]) for i in idx[1:-1])
+        counter.update({key(lines[idx[0]]), key(lines[idx[-1]])})
+    threshold = max(3, min_pages, (len(pages) + 1) // 2)
+    repeated = {k for k, count in counter.items()
+                if count >= threshold and 0 < len(k) < 120
+                and k not in body_keys and not _PAGE_NUM.fullmatch(k)}
+    explicit_page = re.compile(r"^p[áa]g(?:ina|\.)?\s*\d{1,4}(?:\s*(?:de|/)\s*\d{1,4})?$", re.I)
+    result = []
+    for lines, idx in zip(split, indices):
+        remove = set()
+        if len(idx) >= 5:
+            for i in (idx[0], idx[-1]):
+                if key(lines[i]) in repeated or explicit_page.fullmatch(lines[i].strip()):
+                    remove.add(i)
+        result.append("\n".join(line for i, line in enumerate(lines) if i not in remove))
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +144,40 @@ def strip_repeated_lines(pages: List[str], min_pages: int = 3) -> List[str]:
 # ---------------------------------------------------------------------------
 _CUR = {"R$": ("real", "reais"), "US$": ("dólar", "dólares"), "U$": ("dólar", "dólares"),
         "€": ("euro", "euros"), "£": ("libra", "libras")}
+
+
+# Roman numerals are read only after explicit structural labels. Never replace
+# isolated tokens (mix, civil, CD, names, product identifiers, party acronyms).
+_ROMAN_CANONICAL = re.compile(r"M{0,3}(CM|CD|D?C{0,3})(XC|XL|L?X{0,3})(IX|IV|V?I{0,3})$")
+_ROMAN_VALUES = {"I": 1, "V": 5, "X": 10, "L": 50, "C": 100, "D": 500, "M": 1000}
+
+
+def _roman_value(token: str) -> Optional[int]:
+    if not token or not _ROMAN_CANONICAL.fullmatch(token):
+        return None
+    return sum(-_ROMAN_VALUES[c] if i + 1 < len(token) and _ROMAN_VALUES[c] < _ROMAN_VALUES[token[i + 1]]
+               else _ROMAN_VALUES[c] for i, c in enumerate(token))
+
+
+def _legal_and_roman_pt(text: str) -> str:
+    # Ambiguous abbreviations expand only before a legal reference, not globally.
+    legal = {"inc.": "inciso", "incs.": "incisos", "fl.": "folha", "fls.": "folhas"}
+    pattern = r"(?<!\w)(inc\.|incs\.|fl\.|fls\.)(\s+)(\d+[ºª°]?|[IVXLCDM]+)(?!\w)"
+    def legal_reference(match):
+        token = match[3]
+        if not token[0].isdigit() and _roman_value(token) is None:
+            return match[0]
+        return legal[match[1].lower()] + match[2] + token
+    text = re.sub(pattern, legal_reference, text, flags=re.I)
+    text = re.sub(r"§{1,2}", lambda m: " parágrafos " if len(m[0]) == 2 else " parágrafo ", text)
+    # No expansion of 'no.', 'Min.', 'seg.', legal acronyms or citations into
+    # guessed meanings. Paragraph symbols are unambiguous, including §1º.
+    labels = r"(?i:capítulo|cap\.|título|livro|parte|seção|secção|inciso|incisos|artigo|art\.|século|séc\.)"
+    pattern = rf"(?<!\w)({labels})(\s+)([IVXLCDM]+)(?![\w-])"
+    def roman(match):
+        n = _roman_value(match[3])
+        return match[0] if n is None else match[1] + match[2] + _num(n)
+    return re.sub(pattern, roman, text)
 
 
 def _norm_pt(t: str) -> str:
@@ -148,13 +188,14 @@ def _norm_pt(t: str) -> str:
         cur, intp, frac = m.group(1), m.group(2), m.group(3)
         sing, plur = _CUR.get(cur.upper().replace(" ", ""), ("real", "reais"))
         n = _int_br(intp)
-        out = f"{_num(n)} {sing if n == 1 else plur}"
+        connector = " de " if n >= 1_000_000 and n % 1_000_000 == 0 else " "
+        out = f"{_num(n)}{connector}{sing if n == 1 else plur}"
         if frac and int(frac) > 0:
-            c = int(frac)
+            c = int(frac.ljust(2, "0"))
             out += f" e {_num(c)} {'centavo' if c == 1 else 'centavos'}"
         return out
 
-    t = re.sub(r"(R\$|US\$|U\$|€|£)\s?(\d{1,3}(?:\.\d{3})*|\d+)(?:,(\d{1,2}))?", money, t)
+    t = re.sub(r"(?<!\w)(R\$|US\$|U\$|€|£)\s*(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d{1,2}))?(?!\d|[.,]\d)", money, t)
 
     def pct(m):
         v = m.group(1)
@@ -185,7 +226,20 @@ def _norm_pt(t: str) -> str:
     t = re.sub(r"\b(\d{1,2})h(\d{2})?\b", hour, t)
     t = re.sub(r"\b(\d{1,2}):(\d{2})\b(?!:)", hour, t)
 
-    t = re.sub(r"\b(\d+)\s?([ºª°])", lambda m: _ordinal_pt(int(m.group(1)), m.group(2) == "ª"), t)
+    # Temperature has priority over the ordinal-looking degree character.
+    def temperature(m):
+        sign, integer, fraction, scale = m.groups()
+        value = _decimal_pt(integer, fraction)
+        if sign == "-":
+            value = "menos " + value
+        elif sign == "+":
+            value = "mais " + value
+        one = int(integer) == 1 and not (fraction and int(fraction))
+        return f"{value} {'grau' if one else 'graus'} {'Celsius' if scale.upper() == 'C' else 'Fahrenheit'}"
+
+    t = re.sub(r"(?<![\w.,])([+-]?)(\d+)(?:,(\d+))?\s*[°º]\s*([CF])\b", temperature, t, flags=re.I)
+    t = _legal_and_roman_pt(t)
+    t = re.sub(r"\b(\d+)\s?([ºª°])(?!\s*[CF]\b)", lambda m: _ordinal_pt(int(m.group(1)), m.group(2) == "ª"), t)
 
     def unit(m):
         numtxt, u = m.group(1), m.group(2).lower()
@@ -197,7 +251,7 @@ def _norm_pt(t: str) -> str:
         n = _int_br(numtxt)
         return f"{_num(n)} {sing if n == 1 else plur}"
 
-    t = re.sub(r"\b(\d{1,3}(?:\.\d{3})*(?:,\d+)?)\s?(km/h|km²|m²|°C|[a-zA-Z]{1,2})\b", unit, t)
+    t = re.sub(r"\b((?:\d{1,3}(?:\.\d{3})+|\d+)(?:,\d+)?)\s?(km/h|km²|m²|[a-zA-Z]{1,2})\b", unit, t)
 
     def digits(m):
         return " ".join(_num(int(d)) for d in re.sub(r"\D", "", m.group(0)))
@@ -244,7 +298,9 @@ def _norm_generic(t: str, lang: str) -> str:
 
 
 def normalize_for_tts(text: str, lang: Optional[str] = "pt") -> str:
-    lang = (lang or "pt").lower()
+    lang = (lang or "pt").strip().lower().replace("_", "-")
+    if lang in {"pt-br", "pt-pt", "por"}:
+        lang = "pt"
     if lang == "pt":
         return _norm_pt(text)
     if lang in _LANG_MAP:

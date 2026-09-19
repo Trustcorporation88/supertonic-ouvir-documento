@@ -1,0 +1,100 @@
+TAP version 13
+# Subtest: adaptive interval resets on progress and caps unchanged/queued jobs
+ok 1 - adaptive interval resets on progress and caps unchanged/queued jobs
+  ---
+  duration_ms: 3.628877
+  ...
+# Subtest: exponential backoff is bounded, but respects server Retry-After
+ok 2 - exponential backoff is bounded, but respects server Retry-After
+  ---
+  duration_ms: 1.818216
+  ...
+# Subtest: hidden tab schedules no polling timer; return resumes once
+ok 3 - hidden tab schedules no polling timer; return resumes once
+  ---
+  duration_ms: 3.349197
+  ...
+# Subtest: hiding during delay clears timer and retains minimum deadline
+ok 4 - hiding during delay clears timer and retains minimum deadline
+  ---
+  duration_ms: 5.776169
+  ...
+# Subtest: offline polling waits for online event without spin loops
+ok 5 - offline polling waits for online event without spin loops
+  ---
+  duration_ms: 1.81184
+  ...
+# Subtest: cancelling hidden wait removes listeners and timers
+ok 6 - cancelling hidden wait removes listeners and timers
+  ---
+  duration_ms: 2.114157
+  ...
+# Subtest: readResponse will not start a GET while hidden
+ok 7 - readResponse will not start a GET while hidden
+  ---
+  duration_ms: 1.287851
+  ...
+# Subtest: hiding aborts in-flight state fetch and cleans resources
+ok 8 - hiding aborts in-flight state fetch and cleans resources
+  ---
+  duration_ms: 1.764763
+  ...
+# Subtest: timeout covers stalled response body, not only response headers
+ok 9 - timeout covers stalled response body, not only response headers
+  ---
+  duration_ms: 2.598698
+  ...
+# Subtest: 503 retries sequentially, respects Retry-After and recovers
+ok 10 - 503 retries sequentially, respects Retry-After and recovers
+  ---
+  duration_ms: 47.842971
+  ...
+# Subtest: HTTP date Retry-After is interpreted as a deadline
+ok 11 - HTTP date Retry-After is interpreted as a deadline
+  ---
+  duration_ms: 7.583884
+  ...
+# Subtest: permanent 404 fails without retrying or re-creating a job
+ok 12 - permanent 404 fails without retrying or re-creating a job
+  ---
+  duration_ms: 2.024857
+  ...
+# Subtest: backoff does not download state while tab remains hidden
+ok 13 - backoff does not download state while tab remains hidden
+  ---
+  duration_ms: 5.15981
+  ...
+# Subtest: cancel during retry backoff prevents late requests
+ok 14 - cancel during retry backoff prevents late requests
+  ---
+  duration_ms: 2.5415
+  ...
+# Subtest: final audio retry only downloads audio, never re-fetches full job
+ok 15 - final audio retry only downloads audio, never re-fetches full job
+  ---
+  duration_ms: 4.033785
+  ...
+# Subtest: EPUB and explicit progress/error semantics are present in HTML
+ok 16 - EPUB and explicit progress/error semantics are present in HTML
+  ---
+  duration_ms: 0.59347
+  ...
+# Subtest: service worker only removes its own older cache versions
+ok 17 - service worker only removes its own older cache versions
+  ---
+  duration_ms: 1.534308
+  ...
+# Subtest: service worker does not cache API/audio or failed shell responses
+ok 18 - service worker does not cache API/audio or failed shell responses
+  ---
+  duration_ms: 2.220595
+  ...
+1..18
+# tests 18
+# suites 0
+# pass 18
+# fail 0
+# cancelled 0
+# skipped 0
+# todo 0
+# duration_ms 216.819679

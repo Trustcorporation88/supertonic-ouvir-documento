@@ -1,5 +1,5 @@
 // Service worker mínimo: cacheia só a casca da UI (nunca /usar nem /v1).
-const CACHE = "supertonic-shell-v2";
+const CACHE = "supertonic-shell-v3";
 const SHELL = ["/", "/static/styles.css", "/static/app.js", "/favicon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
@@ -8,7 +8,7 @@ self.addEventListener("install", (e) => {
 
 self.addEventListener("activate", (e) => {
   e.waitUntil(
-    caches.keys().then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+    caches.keys().then((keys) => Promise.all(keys.filter((k) => k.startsWith("supertonic-shell-") && k !== CACHE).map((k) => caches.delete(k))))
       .then(() => self.clients.claim())
   );
 });
@@ -19,7 +19,13 @@ self.addEventListener("fetch", (e) => {
   if (!SHELL.includes(url.pathname)) return; // rede direta para API/áudio
   e.respondWith(
     fetch(e.request)
-      .then((res) => { caches.open(CACHE).then((c) => c.put(e.request, res.clone())); return res; })
+      .then((res) => {
+        if (res.ok) {
+          const copy = res.clone();
+          e.waitUntil(caches.open(CACHE).then((c) => c.put(e.request, copy)).catch(() => {}));
+        }
+        return res;
+      })
       .catch(() => caches.match(e.request))
   );
 });

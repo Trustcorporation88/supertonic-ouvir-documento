@@ -15,6 +15,8 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+from contextlib import asynccontextmanager
+from importlib.metadata import version, PackageNotFoundError
 import html
 import io
 import json
@@ -26,6 +28,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import threading
 import urllib.parse
 import uuid
 from pathlib import Path
@@ -43,6 +46,9 @@ from supertonic.server.app import create_app
 from supertonic.server.audio import SUPPORTED_FORMATS, encode_audio, format_to_mime
 from supertonic.server.routes import UnknownVoice, _do_synthesize
 
+from backend_resources import BodyLimitMiddleware, Cancelled, ResourceError, save_upload, trusted_peer, run_process
+import supabase_persistence
+
 from textnorm import clean_layout, normalize_for_tts, split_chunks, strip_repeated_lines
 
 logger = logging.getLogger("supertonic.ui")
@@ -56,6 +62,14 @@ JOBS_DIR.mkdir(parents=True, exist_ok=True)
 # Configuração
 # ---------------------------------------------------------------------------
 MODEL = os.environ.get("SUPERSONIC_MODEL", os.environ.get("SUPERTONIC_MODEL", "supertonic-3"))
+QUEUE_MAX_SIZE = max(1, int(os.environ.get("QUEUE_MAX_SIZE", "16")))
+TRUSTED_PROXIES = os.environ.get("TRUSTED_PROXIES", "")
+ALLOW_REMOTE_DOWNLOADS = os.environ.get("ALLOW_REMOTE_DOWNLOADS", "0") == "1"
+CACHE_REVISION = os.environ.get("CACHE_REVISION", "1")
+try:
+    ENGINE_VERSION = version("supertonic")
+except PackageNotFoundError:
+    ENGINE_VERSION = "stub"
 DEFAULT_LANG = os.environ.get("DEFAULT_LANG", "pt")
 MAX_TEXT_CHARS = int(os.environ.get("MAX_TEXT_CHARS", "120000"))
 MAX_UPLOAD_MB = int(os.environ.get("MAX_UPLOAD_MB", "200"))
@@ -148,17 +162,21 @@ def parse_pages(spec: Optional[str], total: int) -> Optional[List[int]]:
     """'3-10, 12' → [2..9, 11] (índices zero-based, limitados a ``total``)."""
     if not spec or not spec.strip():
         return None
+    if len(spec) > 2048:
+        raise UsarError("Seleção de páginas muito longa.", 400, "bad_pages")
+    if total > 10000:
+        raise UsarError("PDF excede 10000 páginas.", 400, "bad_pages")
     out: set = set()
     for part in re.split(r"[,;\s]+", spec.strip()):
         if not part:
             continue
-        m = re.fullmatch(r"(\d+)(?:-(\d+))?", part)
+        m = re.fullmatch(r"(\d{1,12})(?:-(\d{1,12}))?", part)
         if not m:
             raise UsarError(f"Intervalo de páginas inválido: '{part}'. Use algo como 3-10, 12.", 400, "bad_pages")
         a = int(m.group(1)); b = int(m.group(2) or a)
         if a > b:
             a, b = b, a
-        for n in range(a, b + 1):
+        for n in range(max(1, a), min(total, b) + 1):
             if 1 <= n <= total:
                 out.add(n - 1)
     if not out:
@@ -166,12 +184,14 @@ def parse_pages(spec: Optional[str], total: int) -> Optional[List[int]]:
     return sorted(out)
 
 
-def _extract_pdf(data: bytes, pages_spec: Optional[str] = None) -> str:
+def _extract_pdf(data: Path, pages_spec: Optional[str] = None) -> str:
     try:
         from pypdf import PdfReader
     except ImportError as e:  # pragma: no cover
         raise UsarError("Leitura de PDF indisponível (pypdf).", 501, "pdf_unavailable") from e
-    reader = PdfReader(io.BytesIO(data))
+    reader = PdfReader(str(data))
+    if len(reader.pages) > 10000:
+        raise UsarError("PDF excede 10000 páginas.", 400, "bad_pages")
     wanted = parse_pages(pages_spec, len(reader.pages))
     selected = [reader.pages[i] for i in wanted] if wanted is not None else list(reader.pages)
     pages: List[str] = []
@@ -187,12 +207,12 @@ def _extract_pdf(data: bytes, pages_spec: Optional[str] = None) -> str:
     return text
 
 
-def _extract_docx(data: bytes) -> str:
+def _extract_docx(data: Path) -> str:
     try:
         import docx
     except ImportError as e:  # pragma: no cover
         raise UsarError("Leitura de Word indisponível (python-docx).", 501, "docx_unavailable") from e
-    d = docx.Document(io.BytesIO(data))
+    d = docx.Document(str(data))
     parts = [p.text for p in d.paragraphs if p.text.strip()]
     for table in d.tables:
         for row in table.rows:
@@ -202,8 +222,9 @@ def _extract_docx(data: bytes) -> str:
     return clean_layout("\n\n".join(parts))
 
 
-def _extract_plain(data: bytes, ext: str) -> str:
-    text = data.decode("utf-8", errors="replace")
+def _extract_plain(data: Path, ext: str) -> str:
+    with open(data, "rb") as source:
+        text = source.read(MAX_TEXT_CHARS * 4 + 1).decode("utf-8", errors="replace")
     if ext in {".html", ".htm"}:
         text = re.sub(r"<script.*?</script>|<style.*?</style>", " ", text, flags=re.S | re.I)
         text = re.sub(r"<(br|/p|/div|/h\d|/li)[^>]*>", "\n\n", text, flags=re.I)
@@ -215,7 +236,7 @@ def _extract_plain(data: bytes, ext: str) -> str:
     return clean_layout(text)
 
 
-def _extract_image(data: bytes) -> str:
+def _extract_image(data: Path) -> str:
     try:
         import pytesseract
         from PIL import Image
@@ -223,7 +244,7 @@ def _extract_image(data: bytes) -> str:
         raise UsarError("OCR de imagem não está instalado neste servidor.", 501, "ocr_unavailable") from e
     if not shutil.which("tesseract"):
         raise UsarError("Tesseract não encontrado no servidor.", 501, "ocr_unavailable")
-    img = Image.open(io.BytesIO(data))
+    img = Image.open(data)
     text = pytesseract.image_to_string(img, lang=os.environ.get("TESSERACT_LANG", "por+eng"))
     text = clean_layout(text)
     if not text:
@@ -250,13 +271,13 @@ def _load_whisper():
     return _whisper_model
 
 
-def _to_compact_audio(path: str, workdir: str) -> str:
+def _to_compact_audio(path: str, workdir: str, check_cancel=lambda: None) -> str:
     """Extrai/compacta o áudio (mono, 16 kHz, mp3 32k) para caber na API e ser rápido."""
     if not FFMPEG:
         return path
     out = os.path.join(workdir, "audio16k.mp3")
-    cmd = [FFMPEG, "-y", "-loglevel", "error", "-i", path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", out]
-    subprocess.run(cmd, check=True, timeout=1800)
+    cmd = [FFMPEG, "-y", "-loglevel", "error", "-protocol_whitelist", "file,pipe", "-i", path, "-vn", "-ac", "1", "-ar", "16000", "-b:a", "32k", out]
+    run_process(cmd, check_cancel, timeout=1800)
     return out
 
 
@@ -284,6 +305,7 @@ def _transcribe_openai(path: str, lang: Optional[str], progress) -> str:
 
 
 def _transcribe_local(path: str, lang: Optional[str], progress) -> str:
+    progress("transcribe", 15, "Carregando transcritor…")
     model = _load_whisper()
     progress("transcribe", 15, "Transcrevendo no servidor (pode demorar)…")
     segments, info = model.transcribe(path, vad_filter=True, beam_size=1, language=None if lang in (None, "na") else lang)
@@ -292,15 +314,16 @@ def _transcribe_local(path: str, lang: Optional[str], progress) -> str:
     for s in segments:
         if s.text.strip():
             out.append(s.text.strip())
-        if total:
-            progress("transcribe", 15 + min(40, int(40 * s.end / total)), "Transcrevendo…")
+        progress("transcribe", 15 + (min(40, int(40 * s.end / total)) if total else 0), "Transcrevendo…")
     return " ".join(out)
 
 
 def _transcribe(path: str, lang: Optional[str], progress) -> str:
     with tempfile.TemporaryDirectory() as tmp:
         try:
-            src = _to_compact_audio(path, tmp)
+            src = _to_compact_audio(path, tmp, getattr(getattr(progress, "__self__", None), "check_cancel", lambda: None))
+        except Cancelled:
+            raise
         except Exception as e:
             logger.warning("ffmpeg falhou (%s); usando arquivo original", e)
             src = path
@@ -309,7 +332,7 @@ def _transcribe(path: str, lang: Optional[str], progress) -> str:
                 text = _transcribe_openai(src, lang, progress)
                 if text:
                     return clean_layout(text)
-            except UsarError:
+            except (UsarError, Cancelled):
                 raise
             except Exception as e:
                 logger.warning("OpenAI transcription falhou, usando local: %s", e)
@@ -317,6 +340,8 @@ def _transcribe(path: str, lang: Optional[str], progress) -> str:
 
 
 def _download_media(url: str, workdir: str, progress) -> str:
+    if not ALLOW_REMOTE_DOWNLOADS:
+        raise UsarError("Downloads remotos desabilitados. Envie o arquivo.", 403, "remote_download_disabled")
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise UsarError("Link inválido. Use http(s).", 400, "bad_url")
@@ -348,24 +373,28 @@ def _download_media(url: str, workdir: str, progress) -> str:
     return str(files[0])
 
 
-def _extract_from_upload(filename: str, data: bytes, lang: Optional[str], progress, pages: Optional[str] = None) -> str:
+def _extract_from_upload(filename: str, data: Path, lang: Optional[str], progress, pages: Optional[str] = None) -> str:
     ext = Path(filename or "").suffix.lower()
     progress("read", 8, "Lendo o documento…")
     if ext in PDF_EXT:
         return _extract_pdf(data, pages)
     if ext in DOCX_EXT:
         return _extract_docx(data)
+    if ext == ".epub":
+        from document_features import extract_epub, EpubLimits, DocumentFeatureError
+        try:
+            if data.stat().st_size > EpubLimits().max_archive_bytes:
+                raise UsarError("EPUB excede o limite de 64 MiB.", 413, "epub_too_large")
+            return extract_epub(data.read_bytes())
+        except DocumentFeatureError as exc:
+            raise UsarError(str(exc), 422, "invalid_epub") from exc
     if ext in TEXT_EXT or ext == "":
         return _extract_plain(data, ext)
     if ext in IMAGE_EXT:
         progress("read", 10, "Reconhecendo texto na imagem…")
         return _extract_image(data)
     if ext in MEDIA_EXT:
-        with tempfile.TemporaryDirectory() as tmp:
-            p = os.path.join(tmp, "media" + ext)
-            with open(p, "wb") as f:
-                f.write(data)
-            return _transcribe(p, lang, progress)
+        return _transcribe(str(data), lang, progress)
     raise UsarError(f"Tipo de arquivo não suportado: {ext or 'sem extensão'}.", 415, "unsupported_type")
 
 
@@ -397,8 +426,16 @@ class Job:
         self.dir = JOBS_DIR / self.id
         self.dir.mkdir(parents=True, exist_ok=True)
         self.truncated = False
+        self.cancel_event = threading.Event()
+        self.finished = None
+        self.completion = asyncio.Event()
+
+    def check_cancel(self):
+        if self.cancel_event.is_set():
+            raise Cancelled()
 
     def progress(self, stage: str, percent: int, message: str):
+        self.check_cancel()
         self.stage, self.percent, self.message = stage, max(self.percent, min(99, percent)), message
 
     def public(self, request: Request) -> Dict[str, Any]:
@@ -414,7 +451,7 @@ class Job:
 
 
 JOBS: Dict[str, Job] = {}
-QUEUE: "asyncio.Queue[Job]" = asyncio.Queue()
+QUEUE: "asyncio.Queue[Job]" = asyncio.Queue(maxsize=QUEUE_MAX_SIZE)
 QUEUE_POS: Dict[str, int] = {}
 
 
@@ -425,7 +462,10 @@ def _wav_bytes(wav: np.ndarray, sr: int) -> bytes:
 def _cache_key(job: Job) -> str:
     h = hashlib.sha256()
     h.update(json.dumps({"t": job.text, "v": job.voice, "l": job.lang, "s": job.speed, "p": job.pause,
-                         "f": job.format, "gap": CHUNK_GAP_SECONDS, "ver": 2}, ensure_ascii=False).encode())
+                         "f": job.format, "gap": CHUNK_GAP_SECONDS, "ver": 3, "model": MODEL,
+                         "bitrate": MP3_BITRATE, "revision": CACHE_REVISION, "engine": ENGINE_VERSION,
+                         "sample_rate": getattr(job, "sample_rate", None),
+                         "normalizer": hashlib.sha256((BASE_DIR / "textnorm.py").read_bytes()).hexdigest()}, ensure_ascii=False).encode())
     return h.hexdigest()[:32]
 
 
@@ -436,15 +476,21 @@ def _restore_from_cache(job: Job, key: str) -> bool:
         return False
     try:
         m = json.loads(meta.read_text())
+        if m["format"] not in OUTPUT_FORMATS or not 0 <= m["n"] <= MAX_TEXT_CHARS:
+            return False
+        job.check_cancel()
         for i in range(m["n"]):
             shutil.copyfile(src / f"chunk{i}.wav", job.dir / f"chunk{i}.wav")
         final_name = f"full.{m['format']}"
         shutil.copyfile(src / final_name, job.dir / final_name)
         os.utime(src, None)  # renova o TTL do cache
+    except Cancelled:
+        raise
     except Exception as e:
         logger.warning("cache corrompido %s: %s", key, e)
         shutil.rmtree(src, ignore_errors=True)
         return False
+    job.check_cancel()
     job.chunks, job.chunks_ready, job.duration = m["chunks"], m["n"], m["duration"]
     job.format, job.final, job.cached = m["format"], str(job.dir / final_name), True
     job.status, job.stage, job.percent, job.message = "done", "done", 100, "Pronto (do cache)"
@@ -453,20 +499,28 @@ def _restore_from_cache(job: Job, key: str) -> bool:
 
 def _save_to_cache(job: Job, key: str) -> None:
     dst = CACHE_DIR / key
-    tmp = CACHE_DIR / (key + ".tmp")
-    shutil.rmtree(tmp, ignore_errors=True)
-    tmp.mkdir()
-    for i in range(len(job.chunks)):
-        shutil.copyfile(job.dir / f"chunk{i}.wav", tmp / f"chunk{i}.wav")
-    shutil.copyfile(job.final, tmp / f"full.{job.format}")
-    (tmp / "meta.json").write_text(json.dumps({"n": len(job.chunks), "chunks": job.chunks, "duration": job.duration,
-                                              "format": job.format}, ensure_ascii=False))
-    shutil.rmtree(dst, ignore_errors=True)
-    tmp.rename(dst)
+    tmp = Path(tempfile.mkdtemp(prefix=".publish-", dir=CACHE_DIR))
+    try:
+        for i in range(len(job.chunks)):
+            job.check_cancel()
+            shutil.copyfile(job.dir / f"chunk{i}.wav", tmp / f"chunk{i}.wav")
+        shutil.copyfile(job.final, tmp / f"full.{job.format}")
+        (tmp / "meta.json").write_text(json.dumps({"n": len(job.chunks), "chunks": job.chunks,
+            "duration": job.duration, "format": job.format}, ensure_ascii=False))
+        job.check_cancel()
+        try:
+            tmp.rename(dst)  # atomic publication; never delete a live cache entry
+        except OSError:
+            if not dst.is_dir():
+                raise
+    finally:
+        shutil.rmtree(tmp, ignore_errors=True)
 
 
 def _run_job_sync(job: Job, state) -> None:
+    job.check_cancel()
     sr = state.tts.sample_rate
+    job.sample_rate = sr
     inp = job.input
     # 1) texto
     if inp.get("url"):
@@ -478,65 +532,82 @@ def _run_job_sync(job: Job, state) -> None:
         text = _extract_from_upload(name, data, job.lang, job.progress, job.pages)
     else:
         text = clean_layout(inp.get("text") or "")
+    job.check_cancel()
     if not text:
         raise UsarError("Não encontrei texto para ler.", 422, "empty_text")
     if len(text) > MAX_TEXT_CHARS:
         text, job.truncated = text[:MAX_TEXT_CHARS], True
     job.text = text
+    if getattr(job, "transcribe_only", False):
+        job.status, job.stage, job.percent, job.message = "done", "done", 100, "Pronto"
+        return
 
     # 2) cache
     key = _cache_key(job)
-    if _restore_from_cache(job, key):
+    cacheable = job.voice not in state.custom_styles
+    if cacheable and _restore_from_cache(job, key):
         return
 
     job.chunks = split_chunks(text)
     job.progress("tts", 50, "Gerando voz…")
 
-    # 3) síntese por blocos (pausa maior no fim de parágrafo)
-    parts: List[np.ndarray] = []
+    # Stream each synthesized block to disk; only one audio block stays in RAM.
     total = len(job.chunks)
-    for i, chunk in enumerate(job.chunks):
-        spoken = normalize_for_tts(chunk, job.lang).strip() or chunk.strip()
-        try:
-            wav, dur = _do_synthesize(state, text=spoken, voice=job.voice, lang=job.lang or None, speed=job.speed,
-                                      steps=None, max_chunk_length=None, silence_duration=None)
-        except UnknownVoice as e:
-            raise UsarError(f"Voz desconhecida: {e}", 400, "unknown_voice") from e
-        wav = (wav.squeeze(0) if wav.ndim == 2 else wav).astype(np.float32)
-        if i < total - 1:
-            gap = job.pause if chunk.endswith("\n\n") else CHUNK_GAP_SECONDS
-            wav = np.concatenate([wav, np.zeros(int(sr * gap), dtype=np.float32)])
-            dur += gap
-        (job.dir / f"chunk{i}.wav").write_bytes(_wav_bytes(wav, sr))
-        parts.append(wav)
-        job.duration += dur
-        job.chunks_ready = i + 1
-        job.progress("tts", 50 + int(45 * (i + 1) / total), f"Gerando voz… bloco {i + 1} de {total}")
-
-    # 4) arquivo final
+    wav_path = job.dir / "full.wav"
+    with sf.SoundFile(str(wav_path), mode="w", samplerate=sr, channels=1, subtype="PCM_16") as full:
+        for i, chunk in enumerate(job.chunks):
+            job.check_cancel()
+            spoken = normalize_for_tts(chunk, job.lang).strip() or chunk.strip()
+            try:
+                wav, dur = _do_synthesize(state, text=spoken, voice=job.voice, lang=job.lang or None,
+                    speed=job.speed, steps=None, max_chunk_length=None, silence_duration=None)
+            except UnknownVoice as e:
+                raise UsarError(f"Voz desconhecida: {e}", 400, "unknown_voice") from e
+            job.check_cancel()
+            wav = (wav.squeeze(0) if wav.ndim == 2 else wav).astype(np.float32)
+            gap = (job.pause if chunk.endswith("\n\n") else CHUNK_GAP_SECONDS) if i < total - 1 else 0
+            tmp = job.dir / f"chunk{i}.part"
+            with sf.SoundFile(str(tmp), mode="w", samplerate=sr, channels=1, format="WAV", subtype="PCM_16") as block:
+                block.write(wav)
+                full.write(wav)
+                silence = np.zeros(int(sr * gap), dtype=np.float32)
+                block.write(silence)
+                full.write(silence)
+            tmp.replace(job.dir / f"chunk{i}.wav")
+            job.duration += dur + gap
+            job.chunks_ready = i + 1
+            job.progress("tts", 50 + int(45 * (i + 1) / total), f"Gerando voz… bloco {i + 1} de {total}")
     job.progress("encode", 96, "Montando o arquivo…")
-    full = np.concatenate(parts) if len(parts) > 1 else parts[0]
     fmt = job.format
+    out = job.dir / f"full.{fmt}"
     if fmt == "mp3":
-        wav_path = job.dir / "full.wav"
-        wav_path.write_bytes(_wav_bytes(full, sr))
-        mp3 = job.dir / "full.mp3"
         try:
-            subprocess.run([FFMPEG, "-y", "-loglevel", "error", "-i", str(wav_path), "-codec:a", "libmp3lame",
-                            "-b:a", MP3_BITRATE, "-ac", "1", str(mp3)], check=True, timeout=1800)
-            wav_path.unlink(missing_ok=True)
-            job.final = str(mp3)
+            run_process([FFMPEG, "-y", "-loglevel", "error", "-i", str(wav_path), "-codec:a",
+                         "libmp3lame", "-b:a", MP3_BITRATE, "-ac", "1", str(out)], job.check_cancel)
+        except Cancelled:
+            raise
         except Exception as e:
             logger.warning("mp3 falhou (%s); entregando wav", e)
-            job.format, job.final = "wav", str(wav_path)
-    else:
-        out = job.dir / f"full.{fmt}"
-        out.write_bytes(encode_audio(full, sr, fmt))
-        job.final = str(out)
+            job.format, out = "wav", wav_path
+    elif fmt != "wav":
+        subtype = "VORBIS" if fmt == "ogg" else None
+        with sf.SoundFile(str(wav_path)) as source, sf.SoundFile(str(out), mode="w", samplerate=sr,
+                channels=1, format=fmt.upper(), subtype=subtype) as target:
+            for block in source.blocks(blocksize=65536):
+                job.check_cancel()
+                target.write(block)
+    job.check_cancel()
+    job.final = str(out)
+    if out != wav_path:
+        wav_path.unlink(missing_ok=True)
     try:
-        _save_to_cache(job, key)
+        if cacheable:
+            _save_to_cache(job, key)
+    except Cancelled:
+        raise
     except Exception as e:  # pragma: no cover
         logger.warning("não consegui salvar no cache: %s", e)
+    job.check_cancel()
     job.status, job.stage, job.percent, job.message = "done", "done", 100, "Pronto"
 
 
@@ -547,10 +618,30 @@ async def _worker(state):
         for k in QUEUE_POS:
             QUEUE_POS[k] = max(1, QUEUE_POS[k] - 1)
         if job.status != "queued":
+            QUEUE.task_done()
             continue
         job.status, job.stage, job.message = "running", "read", "Começando…"
         try:
-            await asyncio.to_thread(_run_job_sync, job, state)
+            task = asyncio.create_task(asyncio.to_thread(_run_job_sync, job, state))
+            try:
+                await asyncio.shield(task)
+                if job.status == "done" and job.final:
+                    asyncio.create_task(supabase_persistence.persist_completed_job(job))
+            except asyncio.CancelledError:
+                # to_thread cancellation does not stop its thread. Wait for cooperation
+                # before unlinking uploads or letting the upstream model shut down.
+                job.cancel_event.set()
+                try:
+                    await task
+                except Exception:
+                    pass
+                job.status, job.message = "cancelled", "Cancelado"
+                job.final, job.chunks_ready = None, 0
+                raise
+        except Cancelled:
+            job.status, job.message = "cancelled", "Cancelado"
+            job.final = None
+            job.chunks_ready = 0
         except UsarError as e:
             job.status, job.error, job.message = "error", {"message": e.message, "code": e.code}, e.message
         except subprocess.TimeoutExpired:
@@ -559,7 +650,14 @@ async def _worker(state):
             logger.exception("Job %s falhou", job.id)
             job.status, job.error, job.message = "error", {"message": f"Erro inesperado: {type(e).__name__}.", "code": "internal_error"}, "Erro inesperado."
         finally:
-            job.input = {}  # libera memória do upload
+            if job.input.get("file"):
+                Path(job.input["file"][1]).unlink(missing_ok=True)
+            job.input = {}
+            job.finished = time.time()
+            job.completion.set()
+            QUEUE.task_done()
+            if job.status == "cancelled":
+                shutil.rmtree(job.dir, ignore_errors=True)
 
 
 async def _janitor():
@@ -567,11 +665,11 @@ async def _janitor():
         await asyncio.sleep(600)
         now = time.time()
         for jid, job in list(JOBS.items()):
-            if now - job.created > JOB_TTL_SECONDS:
+            if job.status in {"done", "error", "cancelled"} and job.finished is not None and now - job.finished > JOB_TTL_SECONDS:
                 shutil.rmtree(job.dir, ignore_errors=True)
                 JOBS.pop(jid, None)
         for d in CACHE_DIR.iterdir():
-            if d.is_dir() and now - d.stat().st_mtime > CACHE_TTL_SECONDS:
+            if not d.name.startswith(".") and d.is_dir() and now - d.stat().st_mtime > CACHE_TTL_SECONDS:
                 shutil.rmtree(d, ignore_errors=True)
         for d in SHARE_DIR.iterdir():
             meta = d / "meta.json"
@@ -591,8 +689,16 @@ _HITS: Dict[str, List[float]] = {}
 
 def _client_ip(request: Request) -> str:
     xff = request.headers.get("x-forwarded-for")
-    if xff:
-        return xff.split(",")[0].strip()
+    if xff and request.client and trusted_peer(request.client.host, TRUSTED_PROXIES):
+        # Peel trusted proxies from the right; a client-supplied left prefix
+        # must not win when a trusted reverse proxy appends the true address.
+        chain = [part.strip() for part in xff.split(",")]
+        peer = request.client.host
+        for address in reversed(chain):
+            if not trusted_peer(peer, TRUSTED_PROXIES):
+                break
+            peer = address
+        return peer
     return request.client.host if request.client else "?"
 
 
@@ -639,6 +745,31 @@ def build_app() -> FastAPI:
     state = app.state.server_state
 
     workers: Dict[str, Any] = {}
+    original_lifespan = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(app):
+        async with original_lifespan(app):
+            try:
+                yield
+            finally:
+                for job in JOBS.values():
+                    if job.status in {"queued", "running"}:
+                        job.cancel_event.set()
+                for task in workers.values():
+                    task.cancel()
+                await asyncio.gather(*workers.values(), return_exceptions=True)
+                while not QUEUE.empty():
+                    job = QUEUE.get_nowait()
+                    if job.input.get("file"):
+                        Path(job.input["file"][1]).unlink(missing_ok=True)
+                    job.input = {}
+                    job.status, job.finished = "cancelled", time.time()
+                    job.completion.set()
+                    QUEUE_POS.pop(job.id, None)
+                    shutil.rmtree(job.dir, ignore_errors=True)
+                    QUEUE.task_done()
+    app.router.lifespan_context = lifespan
 
     def _ensure_workers():
         # create_app já define um lifespan, então on_event("startup") não dispara;
@@ -660,7 +791,7 @@ def build_app() -> FastAPI:
             "ocr": _has("pytesseract") and shutil.which("tesseract") is not None,
             "video": bool(FFMPEG) and (bool(OPENAI_KEY) or _has("faster_whisper")),
             "transcriber": "openai" if OPENAI_KEY else ("local" if _has("faster_whisper") else None),
-            "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(), "rate_limit_per_hour": RATE_LIMIT_PER_HOUR,
+            "remote_downloads": ALLOW_REMOTE_DOWNLOADS, "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(), "rate_limit_per_hour": RATE_LIMIT_PER_HOUR,
             "share_ttl_hours": SHARE_TTL_SECONDS // 3600, "cache": sum(1 for d in CACHE_DIR.iterdir() if d.is_dir()),
         }
 
@@ -672,14 +803,17 @@ def build_app() -> FastAPI:
 
     async def _read_inputs(text, url, file):
         if url and url.strip():
+            if not ALLOW_REMOTE_DOWNLOADS:
+                raise UsarError("Downloads remotos desabilitados. Envie o arquivo.", 403, "remote_download_disabled")
             return {"url": url.strip()}
         if file is not None and file.filename:
-            data = await file.read()
-            if len(data) > MAX_UPLOAD_MB * 1024 * 1024:
-                raise UsarError(f"Arquivo maior que {MAX_UPLOAD_MB} MB.", 413, "file_too_large")
-            if not data:
-                raise UsarError("Arquivo vazio.", 400, "empty_file")
-            return {"file": (file.filename, data)}
+            try:
+                path = await save_upload(file, JOBS_DIR, MAX_UPLOAD_MB * 1024 * 1024)
+            except ResourceError as e:
+                code = str(e)
+                raise UsarError("Arquivo vazio." if code == "empty_file" else "Arquivo muito grande.",
+                                400 if code == "empty_file" else 413, code)
+            return {"file": (file.filename, path)}
         if text and text.strip():
             return {"text": text}
         raise UsarError("Envie um texto, um arquivo ou um link.", 400, "missing_input")
@@ -712,15 +846,26 @@ def build_app() -> FastAPI:
         pause_s = DEFAULT_PARAGRAPH_PAUSE if pause is None else max(0.0, min(3.0, float(pause)))
         job = Job(voice=voice or "F1", lang=(lang or DEFAULT_LANG), speed=speed, format=fmt, pause=pause_s,
                   pages=(pages or "").strip() or None, **inputs)
+        job.transcribe_only = bool(inputs.get("url") and request.url.path == "/usar")
+        try:
+            QUEUE.put_nowait(job)
+        except asyncio.QueueFull:
+            if inputs.get("file"):
+                Path(inputs["file"][1]).unlink(missing_ok=True)
+            shutil.rmtree(job.dir, ignore_errors=True)
+            return _err(429, "Fila cheia. Tente novamente depois.", "queue_full")
         JOBS[job.id] = job
-        QUEUE_POS[job.id] = QUEUE.qsize() + 1
-        await QUEUE.put(job)
+        QUEUE_POS[job.id] = QUEUE.qsize()
         return JSONResponse(job.public(request), status_code=202)
 
     @app.get("/api/jobs/{job_id}", include_in_schema=False)
     async def get_job(job_id: str, request: Request):
         job = JOBS.get(job_id)
         if not job:
+            if supabase_persistence.is_enabled():
+                meta = supabase_persistence.get_job_meta(job_id)
+                if meta:
+                    return meta
             return _err(404, "Job não encontrado (expirou?).", "not_found")
         return job.public(request)
 
@@ -734,16 +879,22 @@ def build_app() -> FastAPI:
     @app.get("/api/jobs/{job_id}/audio", include_in_schema=False)
     async def get_audio(job_id: str):
         job = JOBS.get(job_id)
-        if not job or not job.final:
-            return _err(404, "Áudio ainda não está pronto.", "not_ready")
-        mime = "audio/mpeg" if job.format == "mp3" else format_to_mime(job.format)
-        return FileResponse(job.final, media_type=mime, filename=f"supertonic-{job.id}.{job.format}",
-                            headers={"Cache-Control": "private, max-age=86400"})
+        if job and job.status == "done" and job.final and Path(job.final).exists():
+            mime = "audio/mpeg" if job.format == "mp3" else format_to_mime(job.format)
+            return FileResponse(job.final, media_type=mime, filename=f"supertonic-{job.id}.{job.format}",
+                                headers={"Cache-Control": "private, max-age=86400"})
+        if supabase_persistence.is_enabled():
+            fmt = job.format if job else "mp3"
+            signed_url = supabase_persistence.get_audio_signed_url(job_id, fmt)
+            if signed_url:
+                from starlette.responses import RedirectResponse
+                return RedirectResponse(signed_url, status_code=307)
+        return _err(404, "Áudio ainda não está pronto.", "not_ready")
 
     @app.post("/api/jobs/{job_id}/share", include_in_schema=False)
     async def share_job(job_id: str, request: Request, title: Optional[str] = Form(None)):
         job = JOBS.get(job_id)
-        if not job or not job.final:
+        if not job or job.status != "done" or not job.final:
             return _err(404, "Áudio ainda não está pronto.", "not_ready")
         token = secrets.token_urlsafe(9)
         d = SHARE_DIR / token
@@ -755,7 +906,7 @@ def build_app() -> FastAPI:
                 "voice_label": job.voice, "filename": f"supertonic-{token}.{ext}", "expires": expires}
         (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
         base = str(request.base_url).rstrip("/")
-        if request.headers.get("x-forwarded-proto") == "https":
+        if request.client and trusted_peer(request.client.host, TRUSTED_PROXIES) and request.headers.get("x-forwarded-proto") == "https":
             base = "https://" + base.split("://", 1)[1]
         return {"url": f"{base}/s/{token}", "expires": expires}
 
@@ -790,10 +941,11 @@ def build_app() -> FastAPI:
 
     @app.delete("/api/jobs/{job_id}", include_in_schema=False)
     async def delete_job(job_id: str):
-        job = JOBS.pop(job_id, None)
+        job = JOBS.get(job_id)
         if job:
-            job.status = "cancelled"
-            shutil.rmtree(job.dir, ignore_errors=True)
+            if job.status in {"queued", "running"}:
+                job.cancel_event.set()
+                job.message = "Cancelamento solicitado…"
         return {"ok": True}
 
     # ---- compatibilidade: rota síncrona antiga ------------------------------
@@ -806,46 +958,29 @@ def build_app() -> FastAPI:
     ):
         if state.tts is None:
             return _err(503, "Modelo ainda carregando.", "model_loading", "server_error")
-        if request is not None and _rate_limited(request):
-            return _err(429, "Muitas gerações neste IP. Aguarde alguns minutos.", "rate_limited", "rate_limit_error")
         fmt = (response_format or "wav").lower()
         if fmt not in SUPPORTED_FORMATS:
             return _err(400, f"Formato inválido. Use: {', '.join(SUPPORTED_FORMATS)}.", "unsupported_response_format")
         lang = lang or DEFAULT_LANG
+        # Use the same bounded worker and streaming implementation as /api/jobs.
+        result = await create_job(request=request, text=text, url=url, voice=voice, lang=lang,
+            speed=speed, response_format=fmt, file=file, pause=None, pages=pages)
+        if result.status_code != 202:
+            return result
+        job = JOBS[json.loads(result.body)["id"]]
         try:
-            inputs = await _read_inputs(text, url, file)
-            noop = lambda *a, **k: None  # noqa: E731
-            if "url" in inputs:
-                with tempfile.TemporaryDirectory() as tmp:
-                    media = await asyncio.to_thread(_download_media, inputs["url"], tmp, noop)
-                    content = await asyncio.to_thread(_transcribe, media, lang, noop)
-                return JSONResponse({"text": content[:MAX_TEXT_CHARS], "truncated": len(content) > MAX_TEXT_CHARS})
-            if "file" in inputs:
-                name, data = inputs["file"]
-                content = await asyncio.to_thread(_extract_from_upload, name, data, lang, noop, pages)
-            else:
-                content = clean_layout(inputs["text"])
-            if not content:
-                raise UsarError("Não encontrei texto para ler.", 422, "empty_text")
-            truncated = len(content) > MAX_TEXT_CHARS
-            content = content[:MAX_TEXT_CHARS]
-            spoken = normalize_for_tts(content, lang)
-            try:
-                wav, duration = await asyncio.to_thread(_do_synthesize, state, text=spoken, voice=voice or "F1", lang=lang,
-                                                        speed=speed, steps=None, max_chunk_length=None, silence_duration=None)
-            except UnknownVoice as e:
-                raise UsarError(f"Voz desconhecida: {e}", 400, "unknown_voice") from e
-            body = encode_audio(wav, state.tts.sample_rate, fmt)
-            return Response(content=body, media_type=format_to_mime(fmt), headers={
-                "X-Texto": urllib.parse.quote(content[:8000]), "X-Duration-Seconds": f"{duration:.2f}",
-                "X-Truncated": "1" if truncated else "0", "Cache-Control": "no-store"})
-        except UsarError as e:
-            return _err(e.status, e.message, e.code)
-        except subprocess.TimeoutExpired:
-            return _err(504, "Demorou demais para baixar o vídeo.", "download_timeout", "server_error")
-        except Exception as e:  # pragma: no cover
-            logger.exception("Falha em /usar")
-            return _err(500, f"Erro inesperado: {type(e).__name__}.", "internal_error", "server_error")
+            await job.completion.wait()
+        except asyncio.CancelledError:
+            job.cancel_event.set()
+            raise
+        if job.status != "done":
+            error = job.error or {"message": "Cancelado", "code": "cancelled"}
+            return _err(422, error["message"], error["code"])
+        if getattr(job, "transcribe_only", False):
+            return JSONResponse({"text": job.text, "truncated": job.truncated})
+        return FileResponse(job.final, media_type=format_to_mime(job.format), headers={
+            "X-Texto": urllib.parse.quote(job.text[:8000]), "X-Duration-Seconds": f"{job.duration:.2f}",
+            "X-Truncated": "1" if job.truncated else "0", "Cache-Control": "no-store"})
 
     @app.get("/manifest.webmanifest", include_in_schema=False)
     async def manifest():
@@ -866,6 +1001,7 @@ def build_app() -> FastAPI:
         app.add_middleware(ApiKeyMiddleware, api_key=api_key)
     else:
         logger.warning("API_KEY não definida — /v1/* está aberto.")
+    app.add_middleware(BodyLimitMiddleware, max_bytes=MAX_UPLOAD_MB * 1024 * 1024 + 1024 * 1024)
     return app
 
 
@@ -874,7 +1010,7 @@ app = build_app()
 
 def main() -> None:
     uvicorn.run("server:app", host=os.environ.get("HOST", "0.0.0.0"), port=int(os.environ.get("PORT", "8080")),
-                proxy_headers=True, forwarded_allow_ips="*", log_level=os.environ.get("LOG_LEVEL", "info"))
+                proxy_headers=False, log_level=os.environ.get("LOG_LEVEL", "info"))
 
 
 if __name__ == "__main__":

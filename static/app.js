@@ -69,27 +69,32 @@
 
   // ---------------------------------------------------------------- Health / capacidades
   const health = $("health"), healthText = $("health-text");
+  let healthFailures = 0;
   async function checkHealth() {
     try {
-      const r = await fetch("/health", { cache: "no-store" });
-      const j = await r.json();
+      await waitToPoll(0);
+      const j = await readResponse("/health", "json");
+      healthFailures = 0;
       const ok = j.status === "ok";
       health.className = "pill " + (ok ? "ok" : "");
       healthText.textContent = ok ? "pronto" : "carregando modelo…";
       if (!ok) return setTimeout(checkHealth, 4000);
       if (j.mp3 === false) { formatEl.querySelector('[value="mp3"]').disabled = true; if (formatEl.value === "mp3") formatEl.value = "wav"; }
       loadVoices();
-    } catch {
-      health.className = "pill err";
-      healthText.textContent = "offline";
-      setTimeout(checkHealth, 6000);
+    } catch (e) {
+      if (e.name !== "AbortError") {
+        health.className = "pill err";
+        healthText.textContent = "offline";
+        healthFailures += 1;
+      }
+      await waitToPoll(e.name === "AbortError" ? 0 : retryDelay(healthFailures));
+      checkHealth();
     }
   }
   async function loadVoices() {
     try {
-      const r = await fetch("/api/voices");
-      if (!r.ok) return;
-      const j = await r.json();
+      await waitToPoll(0);
+      const j = await readResponse("/api/voices", "json");
       const names = [...(j.voices || []), ...(j.custom || [])];
       if (names.length) renderVoices(names);
       if (j.max_upload_mb) { MAX_MB = j.max_upload_mb; $("max-mb").textContent = MAX_MB; }
@@ -121,11 +126,11 @@
     fnameText.textContent = f ? `${f.name} · ${fmtBytes(f.size)}` : "";
     drop.classList.toggle("has", !!f);
     pagesField.hidden = !(f && /\.pdf$/i.test(f.name));
-    if (!f) pagesEl.value = "";
+    if (!f || !/\.pdf$/i.test(f.name)) pagesEl.value = "";
     if (f) say("");
   }
   drop.onclick = (e) => { if (!e.target.closest("#fclear")) fileEl.click(); };
-  drop.onkeydown = (e) => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); fileEl.click(); } };
+  drop.onkeydown = (e) => { if (e.target === drop && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); fileEl.click(); } };
   fileEl.onchange = () => takeFile(fileEl.files[0]);
   $("fclear").onclick = (e) => { e.stopPropagation(); fileEl.value = ""; takeFile(null); };
   ["dragenter", "dragover"].forEach((ev) => drop.addEventListener(ev, (e) => { e.preventDefault(); drop.classList.add("over"); }));
@@ -185,18 +190,43 @@
   // ---------------------------------------------------------------- Progresso / status
   const status = $("status"), progress = $("progress"), fill = $("fill"), progressMsg = $("progress-msg");
   const steps = [...document.querySelectorAll("#steps li")];
-  function say(msg, cls) { status.className = "status " + (cls || ""); status.textContent = msg; }
+  const errorStatus = $("error-status"), progressBar = $("progress-bar");
+  function say(msg, cls) {
+    const isError = cls === "err";
+    const normal = isError ? "" : msg || "";
+    const error = isError ? msg || "" : "";
+    status.className = "status " + (isError ? "" : cls || "");
+    status.hidden = isError;
+    errorStatus.hidden = !isError;
+    // Do not re-announce identical messages on every polling tick.
+    if (status.textContent !== normal) status.textContent = normal;
+    if (errorStatus.textContent !== error) errorStatus.textContent = error;
+  }
   function setProgress(stage, pct, msg) {
     progress.hidden = false;
     const map = { queued: "read", download: "read", read: "read", transcribe: "read", tts: "tts", encode: "tts", done: "done" };
     const name = map[stage] || "read";
     let passed = true;
-    steps.forEach((li) => { const on = li.dataset.step === name; li.classList.toggle("on", on); li.classList.toggle("done", passed && !on); if (on) passed = false; });
-    fill.classList.toggle("indet", pct < 5);
-    fill.style.width = Math.max(2, pct) + "%";
-    progressMsg.textContent = msg || "";
+    steps.forEach((li) => {
+      const on = li.dataset.step === name;
+      li.classList.toggle("on", on); li.classList.toggle("done", passed && !on);
+      if (on) { passed = false; li.setAttribute("aria-current", "step"); }
+      else li.removeAttribute("aria-current");
+    });
+    const value = Math.max(0, Math.min(100, Number(pct) || 0));
+    const indeterminate = value < 5 && stage !== "done";
+    fill.classList.toggle("indet", indeterminate);
+    fill.style.width = Math.max(2, value) + "%";
+    if (indeterminate) progressBar.removeAttribute("aria-valuenow");
+    else progressBar.setAttribute("aria-valuenow", String(value));
+    progressBar.setAttribute("aria-valuetext", msg || (indeterminate ? "Aguardando…" : `${Math.round(value)}%`));
+    if (progressMsg.textContent !== (msg || "")) progressMsg.textContent = msg || "";
   }
-  function resetProgress() { progress.hidden = true; fill.classList.remove("indet"); fill.style.width = "0%"; progressMsg.textContent = ""; }
+  function resetProgress() {
+    progress.hidden = true; fill.classList.remove("indet"); fill.style.width = "0%"; progressMsg.textContent = "";
+    progressBar.removeAttribute("aria-valuenow"); progressBar.removeAttribute("aria-valuetext");
+    steps.forEach((li) => li.removeAttribute("aria-current"));
+  }
 
   // ---------------------------------------------------------------- Player progressivo
   const result = $("result"), player = $("player"), down = $("down"), preview = $("preview");
@@ -327,20 +357,133 @@
 
   // ---------------------------------------------------------------- Gerar (job)
   const go = $("go");
-  let currentJob = null;
+  let currentJob = null, currentRun = null;
+  const cancelBtn = $("cancel-job");
 
   async function api(path, opts) {
     const r = await fetch(path, opts);
-    if (!r.ok) { const e = await r.json().catch(() => ({})); throw new Error(e.error?.message || `Erro HTTP ${r.status}.`); }
+    if (!r.ok) {
+      const body = await r.json().catch(() => ({}));
+      const error = new Error(body.error?.message || `Erro HTTP ${r.status}.`);
+      error.status = r.status;
+      const retryAfter = r.headers.get("Retry-After");
+      const seconds = retryAfter == null ? NaN : Number(retryAfter);
+      error.retryAfter = Number.isFinite(seconds) ? Math.max(0, seconds * 1000) : Math.max(0, Date.parse(retryAfter) - Date.now()) || 0;
+      throw error;
+    }
     return r;
   }
-  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+
+  // Polling helpers: one in-flight GET, no timers/network while hidden/offline.
+  function abortError() { return new DOMException("Acompanhamento interrompido.", "AbortError"); }
+  function canPoll() { return !document.hidden && navigator.onLine !== false; }
+  function retryable(e) {
+    return e.name === "TypeError" || e.name === "TimeoutError" || e.name === "SyntaxError" ||
+      e.status === 408 || e.status === 429 || e.status >= 500;
+  }
+  function retryDelay(failures, retryAfter = 0) {
+    return Math.max(retryAfter, Math.min(30000, 1000 * (2 ** Math.min(Math.max(0, failures - 1), 5))));
+  }
+  function nextPollDelay(previous, changed, state) {
+    if (changed) return state.status === "queued" ? 2000 : 700;
+    return Math.min(state.status === "queued" ? 10000 : 5000, Math.round(previous * 1.5));
+  }
+  function waitToPoll(delay, signal) {
+    return new Promise((resolve, reject) => {
+      let timer;
+      const until = Date.now() + delay;
+      function cleanup() {
+        clearTimeout(timer);
+        document.removeEventListener("visibilitychange", ready);
+        window.removeEventListener("online", ready);
+        window.removeEventListener("offline", ready);
+        signal?.removeEventListener("abort", aborted);
+      }
+      function aborted() { cleanup(); reject(abortError()); }
+      function ready() {
+        clearTimeout(timer);
+        if (signal?.aborted) return aborted();
+        if (!canPoll()) return;
+        const remaining = Math.max(0, until - Date.now());
+        if (remaining) timer = setTimeout(ready, Math.min(remaining, 2147483647));
+        else { cleanup(); resolve(); }
+      }
+      document.addEventListener("visibilitychange", ready);
+      window.addEventListener("online", ready);
+      window.addEventListener("offline", ready);
+      signal?.addEventListener("abort", aborted, { once: true });
+      ready();
+    });
+  }
+  async function readResponse(path, kind, signal) {
+    const controller = new AbortController();
+    let timedOut = false;
+    const abort = () => controller.abort();
+    const suspend = () => { if (!canPoll()) abort(); };
+    signal?.addEventListener("abort", abort, { once: true });
+    document.addEventListener("visibilitychange", suspend);
+    window.addEventListener("offline", suspend);
+    const timer = setTimeout(() => { timedOut = true; abort(); }, kind === "blob" ? 120000 : 15000);
+    try {
+      if (signal?.aborted || !canPoll()) throw abortError();
+      const r = await api(path, { cache: "no-store", signal: controller.signal });
+      return await r[kind](); // Timeout also covers reading/parsing the body.
+    } catch (e) {
+      if (signal?.aborted) throw abortError();
+      if (timedOut) throw new DOMException("O servidor demorou para responder.", "TimeoutError");
+      throw e;
+    } finally {
+      clearTimeout(timer);
+      signal?.removeEventListener("abort", abort);
+      document.removeEventListener("visibilitychange", suspend);
+      window.removeEventListener("offline", suspend);
+    }
+  }
+  async function readWithRetry(path, kind, signal) {
+    let failures = 0, delay = 0;
+    for (;;) {
+      await waitToPoll(delay, signal);
+      try { return await readResponse(path, kind, signal); }
+      catch (e) {
+        if (signal?.aborted) throw abortError();
+        if (e.name === "AbortError") { delay = 0; continue; }
+        if (!retryable(e)) throw e;
+        delay = retryDelay(++failures, e.retryAfter);
+        say(`Conexão instável. Nova tentativa em ${Math.ceil(delay / 1000)}s; seu pedido não será reenviado.`, "err");
+      }
+    }
+  }
+
+  cancelBtn.onclick = () => {
+    const run = currentRun;
+    if (!run || !currentJob || run.cancelled) return;
+    const jobId = currentJob;
+    run.cancelled = true;
+    run.restoreFocus = document.activeElement === cancelBtn;
+    currentJob = null;
+    run.controller.abort();
+    cancelBtn.disabled = true;
+    play.active = false; play.waiting = false;
+    player.pause(); player.removeAttribute("src"); player.load();
+    result.hidden = true; resetProgress(); setShare(null); setDownload(null);
+    if (play.finalUrl) { URL.revokeObjectURL(play.finalUrl); play.finalUrl = null; }
+    say("Acompanhamento interrompido. Solicitando cancelamento ao servidor…");
+    // DELETE exists, but the current backend cannot interrupt every running stage.
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 15000);
+    run.cancelPromise = api(`/api/jobs/${jobId}`, { method: "DELETE", signal: controller.signal })
+      .then(() => say("Cancelamento solicitado. Uma etapa já em execução pode continuar no servidor."))
+      .catch(() => say("Acompanhamento interrompido, mas não foi possível confirmar o cancelamento no servidor.", "err"))
+      .finally(() => clearTimeout(timer));
+  };
 
   go.onclick = async () => {
+    if (go.disabled) return;
     // estado inicial
     result.hidden = true; truncatedEl.hidden = true; resetProgress(); say("");
     play.active = false; play.urls = []; play.index = -1; play.total = null; play.waiting = false;
-    player.pause(); player.removeAttribute("src");
+    player.pause(); player.removeAttribute("src"); player.load();
+    if (play.finalUrl) { URL.revokeObjectURL(play.finalUrl); play.finalUrl = null; }
     setDownload(null); setShare(null);
 
     const body = new FormData();
@@ -363,16 +506,31 @@
     }
 
     go.disabled = true;
+    go.setAttribute("aria-busy", "true");
+    const submittedVoice = voice;
+    const run = { controller: new AbortController(), cancelled: false, cancelPromise: null };
+    currentRun = run;
+    const signal = run.controller.signal;
     const t0 = performance.now();
     try {
       setProgress("queued", 2, "Enviando…");
       const job = await (await api("/api/jobs", { method: "POST", body })).json();
       currentJob = job.id;
-      let started = false, textShown = false, delay = 700;
+      cancelBtn.hidden = false; cancelBtn.disabled = false; $("cancel-help").hidden = false;
+      let started = false, textShown = false, delay = 700, fingerprint = "";
 
       for (;;) {
-        const j = await (await api(`/api/jobs/${job.id}`)).json();
-        if (currentJob !== job.id) return; // usuário começou outro
+        const j = await readWithRetry(`/api/jobs/${job.id}`, "json", signal);
+        if (signal.aborted || currentJob !== job.id) return;
+        const nextFingerprint = JSON.stringify([j.status, j.stage, j.percent, j.queue_position, j.chunk_urls?.length, j.message]);
+        delay = nextPollDelay(delay, nextFingerprint !== fingerprint, j);
+        fingerprint = nextFingerprint;
+        if (j.status === "cancelled") {
+          play.active = false; play.waiting = false;
+          player.pause(); player.removeAttribute("src"); player.load();
+          result.hidden = true; resetProgress();
+          say("Pedido cancelado no servidor."); break;
+        }
         const msg = j.status === "queued" && j.queue_position > 1 ? `Na fila (posição ${j.queue_position})…` : j.message;
         setProgress(j.stage, j.percent, msg);
         say(j.status === "error" ? "" : msg);
@@ -392,7 +550,8 @@
         if (j.status === "done") {
           play.total = j.chunks.length;
           setProgress("done", 100, "");
-          const blob = await (await api(j.audio_url)).blob();
+          const blob = await readWithRetry(j.audio_url, "blob", signal);
+          if (signal.aborted || currentJob !== job.id) return;
           const ext = j.format;
           const filename = `supertonic-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}.${ext}`;
           const url = URL.createObjectURL(blob);
@@ -402,18 +561,26 @@
           const took = ((performance.now() - t0) / 1000).toFixed(1);
           setShare(job.id);
           say(`Pronto · ${fmtDur(j.duration)} de áudio · ${fmtBytes(blob.size)} · ${took}s${j.cached ? " · do cache ⚡" : ""}`, "ok");
-          await dbPut({ id: job.id, title, voice, duration: j.duration, text: j.text, chunks: j.chunks, filename, blob, when: Date.now() });
+          await dbPut({ id: job.id, title, voice: submittedVoice, duration: j.duration, text: j.text, chunks: j.chunks, filename, blob, when: Date.now() });
           renderHistory();
           break;
         }
-        await sleep(delay);
-        delay = Math.min(2000, delay + 100);
+        await waitToPoll(delay, signal);
       }
     } catch (e) {
       resetProgress();
-      say(e.message || String(e), "err");
+      if (!run.cancelled) {
+        play.active = false; play.waiting = false;
+        player.pause();
+        say(e.message || String(e), "err");
+      }
     } finally {
-      go.disabled = false;
+      await run.cancelPromise;
+      currentJob = null; currentRun = null;
+      const restoreFocus = run.restoreFocus || document.activeElement === cancelBtn;
+      cancelBtn.hidden = true; cancelBtn.disabled = true; $("cancel-help").hidden = true;
+      go.disabled = false; go.removeAttribute("aria-busy");
+      if (restoreFocus) go.focus();
     }
   };
 
