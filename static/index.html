@@ -4,7 +4,7 @@
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <title>SuperTonic — ouvir documento</title>
-  <meta name="description" content="Transforme PDF, Word, texto ou vídeo em áudio com vozes naturais em português." />
+  <meta name="description" content="Transforme PDF, EPUB, Word, texto ou vídeo em áudio com vozes naturais em português." />
   <meta name="theme-color" content="#0c0f14" media="(prefers-color-scheme: dark)" />
   <meta name="theme-color" content="#f7f8fa" media="(prefers-color-scheme: light)" />
   <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
@@ -34,7 +34,7 @@
   <main id="main">
     <section class="hero">
       <h1>Ouvir documento</h1>
-      <p class="lead">Mande um PDF, um texto ou o link de um vídeo. O SuperTonic lê, transcreve e gera o áudio.</p>
+      <p class="lead">Mande um PDF, EPUB, um texto ou o link de um vídeo. O SuperTonic lê, transcreve e gera o áudio.</p>
     </section>
 
     <div class="tabs" role="tablist" aria-label="Tipo de entrada">
@@ -56,7 +56,7 @@
       <div class="drop" id="drop" tabindex="0" role="button" aria-label="Escolher arquivo">
         <svg class="drop-icon" viewBox="0 0 24 24" width="34" height="34" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"/><path d="M17 8l-5-5-5 5M12 3v12"/></svg>
         <strong>Toque ou solte o arquivo aqui</strong>
-        <span>PDF, Word, TXT, imagem, áudio ou vídeo · até <span id="max-mb">60</span> MB</span>
+        <span>PDF, EPUB, Word, TXT, imagem, áudio ou vídeo · até <span id="max-mb">60</span> MB</span>
         <div class="file-chip" id="fname" hidden>
           <span id="fname-text"></span>
           <button type="button" id="fclear" aria-label="Remover arquivo">×</button>
@@ -66,11 +66,11 @@
         <label for="pages">Páginas do PDF <span class="opt">(opcional)</span></label>
         <input id="pages" type="text" inputmode="numeric" placeholder="ex.: 3-10, 12 · vazio = todas" autocomplete="off" />
       </div>
-      <input id="file" type="file" accept=".pdf,.docx,.txt,.md,.csv,.html,.srt,.vtt,.png,.jpg,.jpeg,.webp,.gif,.mp4,.webm,.mov,.mkv,.mp3,.wav,.m4a,.ogg,.flac" />
+      <input id="file" type="file" accept=".pdf,.epub,.docx,.txt,.md,.csv,.html,.srt,.vtt,.png,.jpg,.jpeg,.webp,.gif,.mp4,.webm,.mov,.mkv,.mp3,.wav,.m4a,.ogg,.flac" />
     </section>
 
     <section class="pane" id="pane-text" role="tabpanel" aria-labelledby="tab-text" hidden>
-      <textarea id="text" placeholder="Cole o texto aqui…" spellcheck="false"></textarea>
+      <textarea id="text" aria-label="Texto para converter em áudio" placeholder="Cole o texto aqui…" spellcheck="false"></textarea>
       <div class="meta-row">
         <span id="count">0 caracteres</span>
         <span id="estimate"></span>
@@ -78,7 +78,7 @@
     </section>
 
     <section class="pane" id="pane-video" role="tabpanel" aria-labelledby="tab-video" hidden>
-      <input id="video-url" type="url" inputmode="url" placeholder="Cole o link do vídeo (YouTube, MP4…)" />
+      <input id="video-url" aria-label="Link do vídeo" type="url" inputmode="url" placeholder="Cole o link do vídeo (YouTube, MP4…)" />
       <p class="hint">YouTube às vezes bloqueia o servidor. Se falhar, baixe o vídeo e mande na aba Arquivo.</p>
     </section>
 
@@ -127,8 +127,11 @@
       <span class="spinner" aria-hidden="true"></span>
     </button>
 
+    <button class="btn" id="cancel-job" type="button" hidden disabled aria-describedby="cancel-help">Cancelar pedido</button>
+    <p class="hint" id="cancel-help" hidden>Cancelar interrompe o acompanhamento; uma etapa já iniciada pode continuar no servidor.</p>
+
     <div class="progress" id="progress" hidden>
-      <div class="bar"><div class="fill" id="fill"></div></div>
+      <div class="bar" id="progress-bar" role="progressbar" aria-label="Geração de áudio" aria-valuemin="0" aria-valuemax="100" aria-describedby="progress-msg"><div class="fill" id="fill"></div></div>
       <ol class="steps" id="steps">
         <li data-step="read">Lendo</li>
         <li data-step="tts">Gerando voz</li>
@@ -137,7 +140,8 @@
       <p class="hint" id="progress-msg"></p>
     </div>
 
-    <p class="status" id="status" role="status" aria-live="polite"></p>
+    <p class="status" id="status" role="status" aria-live="polite" aria-atomic="true"></p>
+    <p class="status err" id="error-status" role="alert" aria-atomic="true" hidden></p>
 
     <section class="result" id="result" hidden>
       <audio id="player" controls preload="auto"></audio>
@@ -145,7 +149,7 @@
         <a class="btn primary" id="down" download="supertonic.mp3" aria-disabled="true">Preparando arquivo…</a>
         <button class="btn" id="share" type="button" disabled>Compartilhar</button>
         <button class="btn" id="copy" type="button">Copiar texto</button>
-        <button class="btn" id="toggle-text" type="button" aria-expanded="true">Ocultar texto</button>
+        <button class="btn" id="toggle-text" type="button" aria-expanded="true" aria-controls="preview">Ocultar texto</button>
       </div>
       <div class="text" id="preview"></div>
       <p class="hint" id="truncated" hidden>O texto era muito longo e foi cortado no limite do servidor.</p>
