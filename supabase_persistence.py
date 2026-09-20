@@ -194,3 +194,92 @@ def get_audio_signed_url(local_job_id: str, fmt: str, expires_in: int = 3600) ->
     except Exception as e:
         logger.warning("Erro ao gerar signed URL para job %s: %s", local_job_id, e)
         return None
+
+
+def list_saved_documents() -> list[dict]:
+    """Lista todos os documentos salvos no Supabase para a biblioteca."""
+    client = get_client()
+    if not client:
+        return []
+    try:
+        res = (
+            client.table("jobs")
+            .select("id, status, created_at, config, audio_path, documentos(id, title, text)")
+            .eq("owner_id", SUPABASE_OWNER_ID)
+            .order("created_at", desc=True)
+            .limit(50)
+            .execute()
+        )
+        items = []
+        for r in res.data:
+            doc = r.get("documentos") or {}
+            cfg = r.get("config") or {}
+            job_uuid = r["id"]
+            fmt = cfg.get("format", "mp3")
+            text = doc.get("text", "") or ""
+            items.append({
+                "job_uuid": job_uuid,
+                "title": doc.get("title") or "Documento sem título",
+                "preview": (text[:160] + "...") if len(text) > 160 else text,
+                "created_at": r["created_at"],
+                "format": fmt,
+                "voice": cfg.get("voice", "F1"),
+                "status": r.get("status", "done"),
+                "has_audio": bool(r.get("audio_path")),
+                "audio_url": f"/api/documents/{job_uuid}/audio",
+            })
+        return items
+    except Exception as e:
+        logger.warning("Erro ao listar documentos no Supabase: %s", e)
+        return []
+
+
+def delete_saved_document(job_uuid: str) -> bool:
+    """Remove o job, o documento e o arquivo de áudio do Supabase."""
+    client = get_client()
+    if not client:
+        return False
+    try:
+        job_res = (
+            client.table("jobs")
+            .select("audio_path, document_id")
+            .eq("id", job_uuid)
+            .eq("owner_id", SUPABASE_OWNER_ID)
+            .limit(1)
+            .execute()
+        )
+        if job_res.data:
+            audio_path = job_res.data[0].get("audio_path")
+            doc_id = job_res.data[0].get("document_id")
+            if audio_path:
+                client.storage.from_("supertonic-audio").remove([audio_path])
+            client.table("jobs").delete().eq("id", job_uuid).execute()
+            if doc_id:
+                client.table("documentos").delete().eq("id", doc_id).execute()
+        return True
+    except Exception as e:
+        logger.warning("Erro ao deletar documento %s: %s", job_uuid, e)
+        return False
+
+
+def get_audio_url_by_uuid(job_uuid: str, expires_in: int = 7200) -> Optional[str]:
+    """Retorna URL assinada do Supabase Storage diretamente pelo UUID do job."""
+    client = get_client()
+    if not client:
+        return None
+    try:
+        job = (
+            client.table("jobs")
+            .select("audio_path")
+            .eq("id", job_uuid)
+            .eq("owner_id", SUPABASE_OWNER_ID)
+            .limit(1)
+            .execute()
+        )
+        if job.data and job.data[0].get("audio_path"):
+            path = job.data[0]["audio_path"]
+            signed = client.storage.from_("supertonic-audio").create_signed_url(path, expires_in)
+            return signed.get("signedURL") or signed.get("signedUrl")
+    except Exception as e:
+        logger.warning("Erro ao gerar URL assinada para %s: %s", job_uuid, e)
+    return None

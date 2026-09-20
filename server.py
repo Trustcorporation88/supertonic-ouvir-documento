@@ -92,7 +92,7 @@ OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini
 OPENAI_MAX_UPLOAD = 24 * 1024 * 1024  # limite da API é 25 MB
 
 PUBLIC_EXACT = {"/", "/usar", "/api/voices", "/manifest.webmanifest", "/sw.js", "/favicon.svg", "/favicon.ico"}
-PUBLIC_PREFIXES = ("/health", "/docs", "/redoc", "/openapi.json", "/static", "/api/jobs", "/s")
+PUBLIC_PREFIXES = ("/health", "/docs", "/redoc", "/openapi.json", "/static", "/api/jobs", "/s", "/api/documents")
 
 TEXT_EXT = {".txt", ".md", ".markdown", ".csv", ".json", ".html", ".htm", ".srt", ".vtt"}
 PDF_EXT = {".pdf"}
@@ -120,7 +120,7 @@ def _ffmpeg() -> Optional[str]:
 
 
 FFMPEG = _ffmpeg()
-OUTPUT_FORMATS = list(SUPPORTED_FORMATS) + (["mp3"] if FFMPEG else [])
+OUTPUT_FORMATS = list(SUPPORTED_FORMATS) + (["mp3", "m4b"] if FFMPEG else [])
 
 
 # ---------------------------------------------------------------------------
@@ -421,6 +421,9 @@ class Job:
         self.speed = kw.get("speed")
         self.pause = kw.get("pause", DEFAULT_PARAGRAPH_PAUSE)
         self.pages = kw.get("pages")
+        self.mode = kw.get("mode", "normal")
+        self.translate = bool(kw.get("translate", False))
+        self.podcast_voices: List[str] = []
         self.cached = False
         self.input = kw  # text | file(name, data) | url
         self.dir = JOBS_DIR / self.id
@@ -537,6 +540,28 @@ def _run_job_sync(job: Job, state) -> None:
         raise UsarError("Não encontrei texto para ler.", 422, "empty_text")
     if len(text) > MAX_TEXT_CHARS:
         text, job.truncated = text[:MAX_TEXT_CHARS], True
+
+    # Processamento opcional com IA (Tradução, Resumo, Podcast)
+    import ai_features
+    if getattr(job, "translate", False):
+        job.progress("read", 25, "Traduzindo documento para português…")
+        text = ai_features.translate_to_portuguese(text)
+        job.check_cancel()
+
+    mode = getattr(job, "mode", "normal")
+    if mode == "summary":
+        job.progress("read", 35, "Gerando resumo executivo do documento…")
+        text = ai_features.summarize_text(text)
+        job.check_cancel()
+    elif mode == "podcast":
+        job.progress("read", 35, "Criando roteiro de podcast com 2 vozes…")
+        script = ai_features.generate_podcast_script(text)
+        text = script
+        job.check_cancel()
+        podcast_items = ai_features.parse_podcast_script(script, default_voice=job.voice)
+        job.chunks = [t for _, t in podcast_items]
+        job.podcast_voices = [v for v, _ in podcast_items]
+
     job.text = text
     if getattr(job, "transcribe_only", False):
         job.status, job.stage, job.percent, job.message = "done", "done", 100, "Pronto"
@@ -544,11 +569,12 @@ def _run_job_sync(job: Job, state) -> None:
 
     # 2) cache
     key = _cache_key(job)
-    cacheable = job.voice not in state.custom_styles
+    cacheable = job.voice not in state.custom_styles and getattr(job, "mode", "normal") == "normal"
     if cacheable and _restore_from_cache(job, key):
         return
 
-    job.chunks = split_chunks(text)
+    if not getattr(job, "chunks", None):
+        job.chunks = split_chunks(text)
     job.progress("tts", 50, "Gerando voz…")
 
     # Stream each synthesized block to disk; only one audio block stays in RAM.
@@ -558,8 +584,9 @@ def _run_job_sync(job: Job, state) -> None:
         for i, chunk in enumerate(job.chunks):
             job.check_cancel()
             spoken = normalize_for_tts(chunk, job.lang).strip() or chunk.strip()
+            voice_to_use = job.podcast_voices[i] if getattr(job, "podcast_voices", None) and i < len(job.podcast_voices) else job.voice
             try:
-                wav, dur = _do_synthesize(state, text=spoken, voice=job.voice, lang=job.lang or None,
+                wav, dur = _do_synthesize(state, text=spoken, voice=voice_to_use, lang=job.lang or None,
                     speed=job.speed, steps=None, max_chunk_length=None, silence_duration=None)
             except UnknownVoice as e:
                 raise UsarError(f"Voz desconhecida: {e}", 400, "unknown_voice") from e
@@ -589,6 +616,30 @@ def _run_job_sync(job: Job, state) -> None:
         except Exception as e:
             logger.warning("mp3 falhou (%s); entregando wav", e)
             job.format, out = "wav", wav_path
+    elif fmt == "m4b":
+        try:
+            from document_features import export_m4b, AudioChapter
+            title = None
+            inp = getattr(job, "input", {}) or {}
+            if isinstance(inp, dict) and inp.get("file"):
+                title = str(inp["file"][0]).rsplit(".", 1)[0]
+            chapters = []
+            if len(job.chunks) > 1:
+                cur = 0.0
+                step = max(0.5, job.duration / len(job.chunks))
+                for idx, c in enumerate(job.chunks):
+                    c_title = c.strip().split("\n")[0][:40] or f"Capítulo {idx + 1}"
+                    chapters.append(AudioChapter(title=c_title, start=cur, end=min(job.duration, cur + step)))
+                    cur += step
+            export_m4b(wav_path, out, chapters=chapters if chapters else None, title=title or "SuperTonic Audiolivro", author="SuperTonic")
+        except Cancelled:
+            raise
+        except Exception as e:
+            logger.warning("m4b falhou (%s); entregando mp3", e)
+            job.format, out = ("mp3", job.dir / "full.mp3") if "mp3" in OUTPUT_FORMATS else ("wav", wav_path)
+            if job.format == "mp3":
+                run_process([FFMPEG, "-y", "-loglevel", "error", "-i", str(wav_path), "-codec:a",
+                             "libmp3lame", "-b:a", MP3_BITRATE, "-ac", "1", str(out)], job.check_cancel)
     elif fmt != "wav":
         subtype = "VORBIS" if fmt == "ogg" else None
         with sf.SoundFile(str(wav_path)) as source, sf.SoundFile(str(out), mode="w", samplerate=sr,
@@ -825,6 +876,7 @@ def build_app() -> FastAPI:
         lang: Optional[str] = Form(None), speed: Optional[float] = Form(None),
         response_format: str = Form("mp3"), file: Optional[UploadFile] = File(None),
         pause: Optional[float] = Form(None), pages: Optional[str] = Form(None),
+        mode: str = Form("normal"), translate: bool = Form(False),
     ):
         if state.tts is None:
             return _err(503, "Modelo ainda carregando. Tente em alguns segundos.", "model_loading", "server_error")
@@ -845,7 +897,7 @@ def build_app() -> FastAPI:
         _ensure_workers()
         pause_s = DEFAULT_PARAGRAPH_PAUSE if pause is None else max(0.0, min(3.0, float(pause)))
         job = Job(voice=voice or "F1", lang=(lang or DEFAULT_LANG), speed=speed, format=fmt, pause=pause_s,
-                  pages=(pages or "").strip() or None, **inputs)
+                  pages=(pages or "").strip() or None, mode=mode, translate=translate, **inputs)
         job.transcribe_only = bool(inputs.get("url") and request.url.path == "/usar")
         try:
             QUEUE.put_nowait(job)
@@ -981,6 +1033,30 @@ def build_app() -> FastAPI:
         return FileResponse(job.final, media_type=format_to_mime(job.format), headers={
             "X-Texto": urllib.parse.quote(job.text[:8000]), "X-Duration-Seconds": f"{job.duration:.2f}",
             "X-Truncated": "1" if job.truncated else "0", "Cache-Control": "no-store"})
+
+    @app.get("/api/documents", include_in_schema=False)
+    async def get_saved_documents():
+        if not supabase_persistence.is_enabled():
+            return JSONResponse({"enabled": False, "documents": []})
+        docs = await asyncio.to_thread(supabase_persistence.list_saved_documents)
+        return JSONResponse({"enabled": True, "documents": docs})
+
+    @app.get("/api/documents/{job_uuid}/audio", include_in_schema=False)
+    async def get_saved_document_audio(job_uuid: str):
+        if not supabase_persistence.is_enabled():
+            return _err(404, "Supabase não configurado.", "not_configured")
+        signed_url = await asyncio.to_thread(supabase_persistence.get_audio_url_by_uuid, job_uuid)
+        if not signed_url:
+            return _err(404, "Áudio não encontrado no Supabase.", "not_found")
+        from starlette.responses import RedirectResponse
+        return RedirectResponse(signed_url, status_code=307)
+
+    @app.delete("/api/documents/{job_uuid}", include_in_schema=False)
+    async def delete_saved_document(job_uuid: str):
+        if not supabase_persistence.is_enabled():
+            return _err(404, "Supabase não configurado.", "not_configured")
+        ok = await asyncio.to_thread(supabase_persistence.delete_saved_document, job_uuid)
+        return JSONResponse({"success": ok})
 
     @app.get("/manifest.webmanifest", include_in_schema=False)
     async def manifest():

@@ -6,7 +6,8 @@ ARG WITH_TRANSCRIBE=0
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libsndfile1 \
-    $( [ "$WITH_TRANSCRIBE" = "1" ] && echo ffmpeg tesseract-ocr tesseract-ocr-por tesseract-ocr-eng ) \
+    ffmpeg \
+    $( [ "$WITH_TRANSCRIBE" = "1" ] && echo tesseract-ocr tesseract-ocr-por tesseract-ocr-eng ) \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
@@ -21,7 +22,7 @@ ENV HF_HOME=/data/hf \
     DEFAULT_LANG=pt \
     TESSERACT_LANG=por+eng
 
-COPY start.sh server.py textnorm.py backend_resources.py document_features.py supabase_persistence.py ./
+COPY start.sh server.py textnorm.py backend_resources.py document_features.py supabase_persistence.py ai_features.py ./
 COPY static ./static
 RUN sed -i 's/\r$//' start.sh server.py textnorm.py && chmod +x start.sh
 

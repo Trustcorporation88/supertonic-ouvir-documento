@@ -489,6 +489,9 @@
     const body = new FormData();
     body.append("voice", voice); body.append("lang", langEl.value); body.append("speed", speedEl.value); body.append("response_format", formatEl.value);
     body.append("pause", pauseEl.value);
+    const audioModeEl = $("mode"), translateEl = $("translate");
+    if (audioModeEl) body.append("mode", audioModeEl.value);
+    if (translateEl) body.append("translate", translateEl.value === "true");
     if (mode === "file" && chosen && /\.pdf$/i.test(chosen.name) && pagesEl.value.trim()) body.append("pages", pagesEl.value.trim());
     let title = "";
     if (mode === "file") {
@@ -585,6 +588,109 @@
   };
 
   document.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !go.disabled) go.click(); });
+
+  // ---------------------------------------------------------------- Biblioteca Supabase
+  const libraryBtn = $("library-btn"), libraryModal = $("library-modal");
+  const closeLibrary = $("close-library"), libraryList = $("library-items"), libraryCount = $("library-count");
+
+  function escapeHtml(str) {
+    return String(str || "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));
+  }
+
+  async function loadLibrary() {
+    if (!libraryList) return;
+    libraryList.innerHTML = '<p class="hint">Carregando documentos da nuvem…</p>';
+    try {
+      const r = await fetch("/api/documents");
+      const data = await r.json();
+      if (!data.enabled) {
+        libraryList.innerHTML = '<div class="library-empty">Supabase não configurado. Adicione as variáveis SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY no Railway para ativar a nuvem.</div>';
+        return;
+      }
+      const docs = data.documents || [];
+      if (libraryCount) {
+        libraryCount.textContent = docs.length;
+        libraryCount.hidden = docs.length === 0;
+      }
+      if (docs.length === 0) {
+        libraryList.innerHTML = '<div class="library-empty">Nenhum documento salvo ainda. Converta um documento para vê-lo aqui!</div>';
+        return;
+      }
+      libraryList.innerHTML = "";
+      docs.forEach((doc) => {
+        const card = document.createElement("div");
+        card.className = "doc-card";
+        const dateStr = new Date(doc.created_at).toLocaleString("pt-BR", { dateStyle: "short", timeStyle: "short" });
+        card.innerHTML = `
+          <div class="doc-card-top">
+            <span class="doc-card-title" title="${escapeHtml(doc.title)}">${escapeHtml(doc.title)}</span>
+            <span class="doc-card-tag">${escapeHtml((doc.format || "mp3").toUpperCase())} · ${escapeHtml(doc.voice || "F1")}</span>
+          </div>
+          <div class="doc-card-preview">${escapeHtml(doc.preview || "")}</div>
+          <div class="doc-card-bottom">
+            <span class="doc-card-meta">${dateStr}</span>
+            <div class="doc-card-actions">
+              <button type="button" class="btn-sm play-doc" data-url="${doc.audio_url}">▶ Ouvir</button>
+              <a class="btn-sm" href="${doc.audio_url}" target="_blank" download="supertonic-${doc.job_uuid}.${doc.format}">⬇ Baixar</a>
+              <button type="button" class="btn-sm del del-doc" data-uuid="${doc.job_uuid}">Excluir</button>
+            </div>
+          </div>
+        `;
+        libraryList.appendChild(card);
+      });
+
+      libraryList.querySelectorAll(".play-doc").forEach((btn) => {
+        btn.onclick = () => {
+          libraryModal.hidden = true;
+          player.src = btn.dataset.url;
+          result.hidden = false;
+          player.play().catch(() => {});
+        };
+      });
+
+      libraryList.querySelectorAll(".del-doc").forEach((btn) => {
+        btn.onclick = async () => {
+          if (!confirm("Deseja realmente excluir este áudio da nuvem?")) return;
+          btn.disabled = true;
+          btn.textContent = "…";
+          try {
+            await fetch(`/api/documents/${btn.dataset.uuid}`, { method: "DELETE" });
+            loadLibrary();
+          } catch (e) {
+            alert("Erro ao excluir: " + e.message);
+          }
+        };
+      });
+    } catch (e) {
+      libraryList.innerHTML = `<div class="library-empty">Erro ao carregar documentos: ${escapeHtml(e.message)}</div>`;
+    }
+  }
+
+  if (libraryBtn && libraryModal) {
+    libraryBtn.onclick = () => {
+      libraryModal.hidden = false;
+      loadLibrary();
+    };
+    if (closeLibrary) {
+      closeLibrary.onclick = () => { libraryModal.hidden = true; };
+    }
+    libraryModal.onclick = (e) => {
+      if (e.target === libraryModal) libraryModal.hidden = true;
+    };
+  }
+
+  async function refreshLibraryCount() {
+    try {
+      const r = await fetch("/api/documents");
+      const data = await r.json();
+      if (data.enabled && libraryCount) {
+        const count = data.documents?.length || 0;
+        libraryCount.textContent = count;
+        libraryCount.hidden = count === 0;
+      }
+    } catch {}
+  }
+  refreshLibraryCount();
 
   // ---------------------------------------------------------------- PWA
   if ("serviceWorker" in navigator && location.protocol === "https:") navigator.serviceWorker.register("/sw.js").catch(() => {});

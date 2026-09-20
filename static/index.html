@@ -24,6 +24,10 @@
       <span class="pill" id="health" title="Estado do servidor">
         <span class="dot"></span><span id="health-text">conectando…</span>
       </span>
+      <button class="pill library-pill" id="library-btn" type="button" title="Biblioteca de Áudios Salvos no Supabase">
+        <span>📚 Meus Áudios</span>
+        <span class="badge" id="library-count" hidden>0</span>
+      </button>
       <button class="icon-btn" id="theme" type="button" aria-label="Alternar tema claro/escuro" title="Tema">
         <svg class="sun" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/></svg>
         <svg class="moon" viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
@@ -114,9 +118,25 @@
           <label for="format">Arquivo</label>
           <select id="format">
             <option value="mp3" selected>MP3 · leve, ideal p/ WhatsApp</option>
+            <option value="m4b">M4B · Audiolivro com Capítulos</option>
             <option value="wav">WAV · sem compressão</option>
             <option value="ogg">OGG</option>
             <option value="flac">FLAC</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="mode">Modo de Áudio (IA)</label>
+          <select id="mode">
+            <option value="normal" selected>🎙️ Narração Completa (Lê tudo)</option>
+            <option value="summary">📝 Resumo Executivo (IA)</option>
+            <option value="podcast">📻 Modo Podcast (Debate c/ 2 Vozes)</option>
+          </select>
+        </div>
+        <div class="field">
+          <label for="translate">Tradução de Documentos</label>
+          <select id="translate">
+            <option value="false" selected>Manter idioma original</option>
+            <option value="true">🌐 Traduzir p/ Português (pt-BR)</option>
           </select>
         </div>
       </div>
@@ -163,6 +183,22 @@
       <ul id="history"></ul>
     </section>
   </main>
+
+  <div class="modal-backdrop" id="library-modal" hidden>
+    <div class="modal-card" role="dialog" aria-modal="true" aria-labelledby="library-title">
+      <div class="modal-head">
+        <div class="modal-title-group">
+          <h2 id="library-title">📚 Meus Áudios na Nuvem</h2>
+          <span class="pill ok" id="cloud-status">Supabase Conectado</span>
+        </div>
+        <button class="icon-btn" id="close-library" type="button" aria-label="Fechar">✕</button>
+      </div>
+      <p class="modal-desc">Seus áudios gerados e salvos no Supabase Storage. Ouça direto ou baixe o arquivo.</p>
+      <div class="library-items" id="library-items">
+        <p class="hint">Carregando documentos…</p>
+      </div>
+    </div>
+  </div>
 
   <footer class="foot">
     <span>Supertonic TTS · roda em CPU</span>
