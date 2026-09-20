@@ -114,15 +114,25 @@ def summarize_text(text: str, max_length: int = 1500) -> str:
 # ---------------------------------------------------------------------------
 # 2. Modo Podcast / Debate com 2 Vozes (Estilo NotebookLM)
 # ---------------------------------------------------------------------------
-def generate_podcast_script(text: str) -> str:
+STYLES_MAP = {
+    "fun": "Estilo DESCONTRAÍDO & CURIOSO: conversa dinâmica, informal, bem-humorada e cativante, com perguntas provocativas.",
+    "biz": "Estilo EXECUTIVO & NEGÓCIOS: foco estrito em métricas, ROI, eficiência, tomada de decisão e visão estratégica de mercado.",
+    "edu": "Estilo AULA DIDÁTICA: tom pedagógico acolhedor, com analogias claras, explicações passo a passo como em uma aula memorável.",
+    "debate": "Estilo DEBATE CRÍTICO: [Mulher 1] defende com entusiasmo as teses do documento, enquanto [Homem 1] pondera com questionamentos céticos realistas.",
+}
+
+
+def generate_podcast_script(text: str, style: str = "fun") -> str:
     """Gera um roteiro de podcast dinâmico com 2 apresentadores: [Mulher 1] e [Homem 1]."""
     if not text:
         return ""
 
+    style_desc = STYLES_MAP.get(style, STYLES_MAP["fun"])
     sys = (
         "Você é um produtor de podcasts premiado no estilo do Google NotebookLM. "
         "Sua tarefa é transformar o documento enviado em um episódio de podcast fluido e conversacional "
         "entre dois apresentadores brasileiros muito carismáticos: [Mulher 1] e [Homem 1].\n\n"
+        f"{style_desc}\n\n"
         "Regras estritas:\n"
         "1. Toda fala deve começar EXATAMENTE com '[Mulher 1]: ' ou '[Homem 1]: '.\n"
         "2. Eles devem conversar naturalmente, reagir um ao outro, fazer perguntas e explicar os pontos mais fascinantes do documento.\n"
@@ -163,6 +173,75 @@ def generate_podcast_script(text: str) -> str:
     dialogue.append("[Mulher 1]: Excelente resumo. Esse foi o panorama essencial deste documento.")
     dialogue.append("[Homem 1]: Obrigado pela companhia de sempre e até a próxima!")
     return "\n\n".join(dialogue)
+
+
+def generate_podcast_jingle(sample_rate: int = 24000, is_intro: bool = True):
+    """Gera uma vinheta acústica harmônica e suave em float32 para o modo podcast."""
+    import numpy as np
+
+    duration = 2.2 if is_intro else 1.8
+    t = np.linspace(0, duration, int(sample_rate * duration), False)
+    freqs = [261.63, 329.63, 392.00, 523.25] if is_intro else [523.25, 392.00, 329.63, 261.63]
+    audio = np.zeros_like(t)
+    for i, f in enumerate(freqs):
+        delay = i * 0.14
+        t_shifted = np.maximum(0, t - delay)
+        env = np.exp(-t_shifted * 2.5) * (t >= delay)
+        tone = np.sin(2 * np.pi * f * t_shifted) + 0.25 * np.sin(2 * np.pi * (f * 2) * t_shifted)
+        audio += tone * env * 0.18
+    fade_in = np.minimum(1.0, t / 0.05)
+    fade_out = np.minimum(1.0, (duration - t) / 0.6)
+    return (audio * fade_in * fade_out).astype(np.float32)
+
+
+def build_podcast_rss_feed(items: list[dict], base_url: str) -> str:
+    """Gera feed RSS 2.0 compatível com Apple Podcasts / Pocket Casts / Spotify."""
+    from datetime import datetime, timezone
+    import xml.etree.ElementTree as ET
+
+    base = base_url.rstrip("/")
+    rss = ET.Element("rss", {
+        "version": "2.0",
+        "xmlns:itunes": "http://www.itunes.com/dtds/podcast-1.0.dtd",
+        "xmlns:content": "http://purl.org/rss/1.0/modules/content/",
+    })
+    channel = ET.SubElement(rss, "channel")
+    ET.SubElement(channel, "title").text = "SuperTonic — Meus Documentos & Podcasts"
+    ET.SubElement(channel, "link").text = base
+    ET.SubElement(channel, "language").text = "pt-br"
+    ET.SubElement(channel, "description").text = "Feed pessoal privado de documentos, audiolivros e podcasts gerados pelo SuperTonic."
+    ET.SubElement(channel, "itunes:author").text = "SuperTonic"
+    ET.SubElement(channel, "itunes:image", {"href": f"{base}/static/icon-512.png"})
+    cat = ET.SubElement(channel, "itunes:category", {"text": "Technology"})
+    ET.SubElement(cat, "itunes:category", {"text": "Podcasts"})
+
+    for it in items:
+        item = ET.SubElement(channel, "item")
+        title = it.get("title") or "Documento em Áudio"
+        ET.SubElement(item, "title").text = title
+        ET.SubElement(item, "description").text = it.get("preview") or "Áudio gerado no SuperTonic"
+        guid = it.get("job_uuid") or it.get("id") or "doc"
+        ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = str(guid)
+
+        audio_url = f"{base}{it.get('audio_url')}" if it.get("audio_url", "").startswith("/") else it.get("audio_url", "")
+        fmt = it.get("format", "mp3")
+        mime = "audio/mp4" if fmt == "m4b" else ("audio/wav" if fmt == "wav" else "audio/mpeg")
+        ET.SubElement(item, "enclosure", {
+            "url": audio_url,
+            "length": "1048576",
+            "type": mime,
+        })
+        pub = it.get("created_at")
+        if pub:
+            try:
+                dt = datetime.fromisoformat(str(pub).replace("Z", "+00:00"))
+                ET.SubElement(item, "pubDate").text = dt.strftime("%a, %d %b %Y %H:%M:%S +0000")
+            except Exception:
+                ET.SubElement(item, "pubDate").text = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+        else:
+            ET.SubElement(item, "pubDate").text = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
+
+    return ET.tostring(rss, encoding="utf-8", xml_declaration=True).decode("utf-8")
 
 
 def parse_podcast_script(script: str, default_voice: str = "F1") -> List[Tuple[str, str]]:

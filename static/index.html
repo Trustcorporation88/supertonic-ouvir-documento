@@ -129,7 +129,10 @@
           <select id="mode">
             <option value="normal" selected>🎙️ Narração Completa (Lê tudo)</option>
             <option value="summary">📝 Resumo Executivo (IA)</option>
-            <option value="podcast">📻 Modo Podcast (Debate c/ 2 Vozes)</option>
+            <option value="podcast-fun">📻 Podcast: Descontraído &amp; Curioso</option>
+            <option value="podcast-biz">💼 Podcast: Executivo &amp; Negócios</option>
+            <option value="podcast-edu">🎓 Podcast: Didático / Professor</option>
+            <option value="podcast-debate">⚡ Podcast: Debate Crítico</option>
           </select>
         </div>
         <div class="field">
@@ -138,6 +141,12 @@
             <option value="false" selected>Manter idioma original</option>
             <option value="true">🌐 Traduzir p/ Português (pt-BR)</option>
           </select>
+        </div>
+        <div class="field smart-skip-field">
+          <label class="checkbox-label" for="smart-skip" title="Remove números de páginas soltos, notas de rodapé e sumários repetidos">
+            <input type="checkbox" id="smart-skip" checked />
+            <span>✨ Smart Skip (pula rodapés e páginas)</span>
+          </label>
         </div>
       </div>
     </section>
@@ -169,7 +178,11 @@
         <a class="btn primary" id="down" download="supertonic.mp3" aria-disabled="true">Preparando arquivo…</a>
         <button class="btn" id="share" type="button" disabled>Compartilhar</button>
         <button class="btn" id="copy" type="button">Copiar texto</button>
+        <button class="btn" id="toggle-karaoke" type="button" class="on" aria-pressed="true" title="Destacar e rolar o texto automaticamente com o áudio">✨ Karaokê</button>
         <button class="btn" id="toggle-text" type="button" aria-expanded="true" aria-controls="preview">Ocultar texto</button>
+      </div>
+      <div class="shortcuts-row">
+        <span class="shortcut-pill">⌨️ Espaço: Play/Pause · ←/→: ±5s</span>
       </div>
       <div class="text" id="preview"></div>
       <p class="hint" id="truncated" hidden>O texto era muito longo e foi cortado no limite do servidor.</p>
@@ -191,7 +204,10 @@
           <h2 id="library-title">📚 Meus Áudios na Nuvem</h2>
           <span class="pill ok" id="cloud-status">Supabase Conectado</span>
         </div>
-        <button class="icon-btn" id="close-library" type="button" aria-label="Fechar">✕</button>
+        <div class="modal-actions">
+          <button class="btn-sm rss-btn" id="copy-rss" type="button" title="Copiar feed RSS para ouvir no Apple Podcasts ou Pocket Casts">📡 Feed RSS</button>
+          <button class="icon-btn" id="close-library" type="button" aria-label="Fechar">✕</button>
+        </div>
       </div>
       <p class="modal-desc">Seus áudios gerados e salvos no Supabase Storage. Ouça direto ou baixe o arquivo.</p>
       <div class="library-items" id="library-items">

@@ -354,3 +354,20 @@ def split_chunks(text: str, first: int = 110, size: int = 380, hard: int = 900) 
     if cur.strip():
         chunks.append(cur)
     return chunks
+
+
+def smart_skip_filter(text: str) -> str:
+    """Limpeza inteligente estilo Speechify: remove números de páginas soltos,
+    notas de rodapé numéricas tipo [1], separadores de tabela e linhas de rodapé."""
+    if not text:
+        return ""
+    # Remove números de página isolados
+    text = re.sub(r"(?mi)^\s*(?:p[aá]g(?:ina|\.)?\s*\d+(?:\s*(?:de|/)\s*\d+)?|\d+|- \d+ -)\s*$", "", text)
+    # Remove referências de notas [1], [24]
+    text = re.sub(r"\[(?:\d{1,3}|nota\s*\d+)\]", "", text)
+    # Remove divisores de tabela e linhas de rodapé
+    text = re.sub(r"(?m)^[\s\|\+\-\:\=]{4,}$", "", text)
+    text = re.sub(r"(?m)^[_\-*]{3,}\s*$", "", text)
+    # Compacta linhas vazias
+    text = re.sub(r"\n{3,}", "\n\n", text)
+    return text.strip()

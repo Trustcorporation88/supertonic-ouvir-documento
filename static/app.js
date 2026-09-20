@@ -228,30 +228,77 @@
     steps.forEach((li) => li.removeAttribute("aria-current"));
   }
 
-  // ---------------------------------------------------------------- Player progressivo
+  // ---------------------------------------------------------------- Player progressivo & Karaokê
   const result = $("result"), player = $("player"), down = $("down"), preview = $("preview");
   const truncatedEl = $("truncated"), toggleText = $("toggle-text"), copyBtn = $("copy");
+  const toggleKaraoke = $("toggle-karaoke");
   let lastText = "";
-  const play = { urls: [], index: -1, waiting: false, active: false, finalUrl: null, spans: [] };
+  let karaokeEnabled = true;
+  const play = { urls: [], index: -1, waiting: false, active: false, finalUrl: null, spans: [], chunkRatios: [] };
+
+  if (toggleKaraoke) {
+    toggleKaraoke.classList.add("active-karaoke");
+    toggleKaraoke.onclick = () => {
+      karaokeEnabled = !karaokeEnabled;
+      toggleKaraoke.classList.toggle("active-karaoke", karaokeEnabled);
+      toggleKaraoke.setAttribute("aria-pressed", String(karaokeEnabled));
+      if (!karaokeEnabled) highlight(-1);
+    };
+  }
 
   function renderChunks(chunks) {
     preview.innerHTML = "";
+    const totalChars = chunks.reduce((acc, c) => acc + c.length, 0) || 1;
+    let accumulated = 0;
+    play.chunkRatios = chunks.map((c) => {
+      const start = accumulated / totalChars;
+      accumulated += c.length;
+      const end = accumulated / totalChars;
+      return { start, end };
+    });
+
     play.spans = chunks.map((c, i) => {
       const s = document.createElement("span");
       s.className = "chunk";
       s.dataset.i = i;
       s.textContent = c;
-      s.title = "Clique para ouvir daqui";
-      s.onclick = () => { if (i < play.urls.length) playChunk(i); };
+      s.title = "Clique para ouvir este trecho";
+      s.onclick = () => {
+        if (player.src && player.duration && isFinite(player.duration)) {
+          const ratio = play.chunkRatios[i]?.start || 0;
+          player.currentTime = ratio * player.duration;
+          highlight(i);
+          player.play().catch(() => {});
+        } else if (i < play.urls.length) {
+          playChunk(i);
+        }
+      };
       preview.appendChild(s);
       return s;
     });
   }
+
   function highlight(i) {
-    play.spans.forEach((s, k) => { s.classList.toggle("now", k === i); s.classList.toggle("ready", k < play.urls.length); });
+    play.spans.forEach((s, k) => {
+      s.classList.toggle("now", k === i);
+      s.classList.toggle("ready", k < play.urls.length || Boolean(player.src));
+    });
     const el = play.spans[i];
-    if (el && !preview.hidden) el.scrollIntoView({ block: "nearest", behavior: "smooth" });
+    if (el && !preview.hidden && karaokeEnabled) {
+      el.scrollIntoView({ block: "center", behavior: "smooth" });
+    }
   }
+
+  player.addEventListener("timeupdate", () => {
+    if (!karaokeEnabled || !player.duration || !isFinite(player.duration) || !play.chunkRatios.length) return;
+    const progressRatio = player.currentTime / player.duration;
+    const idx = play.chunkRatios.findIndex((r) => progressRatio >= r.start && progressRatio <= r.end);
+    if (idx !== -1 && idx !== play.index) {
+      play.index = idx;
+      highlight(idx);
+    }
+  });
+
   function playChunk(i) {
     if (i >= play.urls.length) { play.waiting = true; return; }
     play.index = i; play.waiting = false; play.active = true;
@@ -489,9 +536,10 @@
     const body = new FormData();
     body.append("voice", voice); body.append("lang", langEl.value); body.append("speed", speedEl.value); body.append("response_format", formatEl.value);
     body.append("pause", pauseEl.value);
-    const audioModeEl = $("mode"), translateEl = $("translate");
+    const audioModeEl = $("mode"), translateEl = $("translate"), smartSkipEl = $("smart-skip");
     if (audioModeEl) body.append("mode", audioModeEl.value);
     if (translateEl) body.append("translate", translateEl.value === "true");
+    if (smartSkipEl) body.append("smart_skip", smartSkipEl.checked);
     if (mode === "file" && chosen && /\.pdf$/i.test(chosen.name) && pagesEl.value.trim()) body.append("pages", pagesEl.value.trim());
     let title = "";
     if (mode === "file") {
@@ -587,11 +635,42 @@
     }
   };
 
-  document.addEventListener("keydown", (e) => { if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !go.disabled) go.click(); });
+  document.addEventListener("keydown", (e) => {
+    if ((e.ctrlKey || e.metaKey) && e.key === "Enter" && !go.disabled) {
+      go.click();
+      return;
+    }
+    if (["INPUT", "TEXTAREA", "SELECT"].includes(document.activeElement?.tagName)) return;
+    if (e.code === "Space" && player.src) {
+      e.preventDefault();
+      if (player.paused) player.play().catch(() => {});
+      else player.pause();
+    } else if (e.code === "ArrowLeft" && player.src) {
+      e.preventDefault();
+      player.currentTime = Math.max(0, player.currentTime - 5);
+    } else if (e.code === "ArrowRight" && player.src) {
+      e.preventDefault();
+      player.currentTime = Math.min(player.duration || 0, player.currentTime + 5);
+    }
+  });
 
   // ---------------------------------------------------------------- Biblioteca Supabase
   const libraryBtn = $("library-btn"), libraryModal = $("library-modal");
   const closeLibrary = $("close-library"), libraryList = $("library-items"), libraryCount = $("library-count");
+  const copyRssBtn = $("copy-rss");
+
+  if (copyRssBtn) {
+    copyRssBtn.onclick = async () => {
+      const rssUrl = new URL("/api/feed.xml", location.href).href;
+      try {
+        await navigator.clipboard.writeText(rssUrl);
+        copyRssBtn.textContent = "Feed Copiado! ✓";
+      } catch {
+        copyRssBtn.textContent = "Copie: /api/feed.xml";
+      }
+      setTimeout(() => (copyRssBtn.textContent = "📡 Feed RSS"), 2500);
+    };
+  }
 
   function escapeHtml(str) {
     return String(str || "").replace(/[&<>"']/g, (m) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[m]));

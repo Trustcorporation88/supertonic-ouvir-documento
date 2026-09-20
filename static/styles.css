@@ -458,3 +458,79 @@ audio { width: 100%; display: block; height: 40px; }
   color: #fff;
   border-color: var(--err);
 }
+
+/* ---------- Smart Skip & Checkbox ---------- */
+.smart-skip-field {
+  display: flex;
+  align-items: center;
+  margin-top: 4px;
+}
+.checkbox-label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: .84rem;
+  color: var(--text);
+  cursor: pointer;
+  user-select: none;
+}
+.checkbox-label input[type="checkbox"] {
+  width: 16px;
+  height: 16px;
+  accent-color: var(--acc);
+  cursor: pointer;
+}
+
+/* ---------- Shortcuts & Karaoke ---------- */
+.shortcuts-row {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 6px;
+  margin-bottom: 2px;
+}
+.shortcut-pill {
+  font-size: .72rem;
+  color: var(--muted-2);
+  background: var(--card-2);
+  padding: 2px 8px;
+  border-radius: 6px;
+  border: 1px solid var(--line);
+}
+
+.text .chunk {
+  transition: background-color .18s ease, box-shadow .18s ease, transform .18s ease;
+  border-radius: 4px;
+  padding: 2px 3px;
+  display: inline;
+}
+.text .chunk.now {
+  background: var(--acc-soft) !important;
+  color: var(--acc-2) !important;
+  font-weight: 600;
+  box-shadow: 0 0 0 3px var(--acc-soft);
+  text-decoration: underline;
+  text-decoration-color: var(--acc-line);
+  text-underline-offset: 3px;
+}
+
+.btn.active-karaoke {
+  background: var(--acc);
+  color: #fff;
+  border-color: var(--acc);
+}
+
+.rss-btn {
+  background: #f59e0b !important;
+  color: #000 !important;
+  font-weight: 600;
+  border-color: #d97706 !important;
+}
+.rss-btn:hover {
+  background: #d97706 !important;
+  color: #fff !important;
+}
+.modal-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}

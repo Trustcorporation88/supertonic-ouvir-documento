@@ -45,3 +45,42 @@ def test_translate_to_portuguese_fallback_offline():
     res = ai_features.translate_to_portuguese(txt)
     assert isinstance(res, str)
     assert len(res) > 0
+
+
+
+def test_podcast_rss_feed_generation():
+    import ai_features
+    sample_items = [
+        {
+            "job_uuid": "11111111-2222-3333-4444-555555555555",
+            "title": "Episódio 1: Relatório Anual",
+            "preview": "Visão geral sobre o desempenho da empresa",
+            "created_at": "2026-09-20T10:00:00Z",
+            "format": "mp3",
+            "audio_url": "/api/documents/11111111-2222-3333-4444-555555555555/audio",
+        }
+    ]
+    xml = ai_features.build_podcast_rss_feed(sample_items, "https://supertonic.app")
+    assert "<rss" in xml
+    assert "<itunes:author>SuperTonic</itunes:author>" in xml
+    assert "Episódio 1: Relatório Anual" in xml
+    assert "https://supertonic.app/api/documents/11111111-2222-3333-4444-555555555555/audio" in xml
+
+
+def test_podcast_styles_script_generation():
+    import ai_features
+    doc = "A tecnologia quântica promete revolucionar a criptografia e o processamento de dados nas próximas décadas."
+    for style in ["fun", "biz", "edu", "debate"]:
+        script = ai_features.generate_podcast_script(doc, style=style)
+        assert "[Mulher 1]:" in script
+        assert "[Homem 1]:" in script
+
+
+def test_podcast_acoustic_jingles():
+    import ai_features
+    intro = ai_features.generate_podcast_jingle(24000, is_intro=True)
+    outro = ai_features.generate_podcast_jingle(24000, is_intro=False)
+    assert len(intro) > 0
+    assert len(outro) > 0
+    assert max(abs(intro)) <= 1.0
+    assert max(abs(outro)) <= 1.0

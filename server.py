@@ -91,7 +91,7 @@ OPENAI_KEY = (os.environ.get("OPENAI_API_KEY") or os.environ.get("openai_key") o
 OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
 OPENAI_MAX_UPLOAD = 24 * 1024 * 1024  # limite da API é 25 MB
 
-PUBLIC_EXACT = {"/", "/usar", "/api/voices", "/manifest.webmanifest", "/sw.js", "/favicon.svg", "/favicon.ico"}
+PUBLIC_EXACT = {"/", "/usar", "/api/voices", "/manifest.webmanifest", "/sw.js", "/favicon.svg", "/favicon.ico", "/api/feed.xml", "/feed.xml"}
 PUBLIC_PREFIXES = ("/health", "/docs", "/redoc", "/openapi.json", "/static", "/api/jobs", "/s", "/api/documents")
 
 TEXT_EXT = {".txt", ".md", ".markdown", ".csv", ".json", ".html", ".htm", ".srt", ".vtt"}
@@ -421,8 +421,12 @@ class Job:
         self.speed = kw.get("speed")
         self.pause = kw.get("pause", DEFAULT_PARAGRAPH_PAUSE)
         self.pages = kw.get("pages")
-        self.mode = kw.get("mode", "normal")
-        self.translate = bool(kw.get("translate", False))
+        mode_val = kw.get("mode", "normal")
+        self.mode = str(getattr(mode_val, "default", mode_val) if hasattr(mode_val, "default") else (mode_val or "normal"))
+        trans_val = kw.get("translate", False)
+        self.translate = bool(getattr(trans_val, "default", trans_val) if hasattr(trans_val, "default") else trans_val)
+        skip_val = kw.get("smart_skip", False)
+        self.smart_skip = bool(getattr(skip_val, "default", skip_val) if hasattr(skip_val, "default") else skip_val)
         self.podcast_voices: List[str] = []
         self.cached = False
         self.input = kw  # text | file(name, data) | url
@@ -541,8 +545,13 @@ def _run_job_sync(job: Job, state) -> None:
     if len(text) > MAX_TEXT_CHARS:
         text, job.truncated = text[:MAX_TEXT_CHARS], True
 
-    # Processamento opcional com IA (Tradução, Resumo, Podcast)
+    # Processamento opcional com IA (Tradução, Resumo, Podcast) e Limpeza Inteligente
     import ai_features
+    from textnorm import smart_skip_filter
+    if getattr(job, "smart_skip", False):
+        text = smart_skip_filter(text)
+        job.check_cancel()
+
     if getattr(job, "translate", False):
         job.progress("read", 25, "Traduzindo documento para português…")
         text = ai_features.translate_to_portuguese(text)
@@ -553,9 +562,10 @@ def _run_job_sync(job: Job, state) -> None:
         job.progress("read", 35, "Gerando resumo executivo do documento…")
         text = ai_features.summarize_text(text)
         job.check_cancel()
-    elif mode == "podcast":
-        job.progress("read", 35, "Criando roteiro de podcast com 2 vozes…")
-        script = ai_features.generate_podcast_script(text)
+    elif mode.startswith("podcast"):
+        style = mode.split("-", 1)[1] if "-" in mode else "fun"
+        job.progress("read", 35, f"Criando roteiro de podcast ({style})…")
+        script = ai_features.generate_podcast_script(text, style=style)
         text = script
         job.check_cancel()
         podcast_items = ai_features.parse_podcast_script(script, default_voice=job.voice)
@@ -580,7 +590,14 @@ def _run_job_sync(job: Job, state) -> None:
     # Stream each synthesized block to disk; only one audio block stays in RAM.
     total = len(job.chunks)
     wav_path = job.dir / "full.wav"
+    is_podcast = getattr(job, "mode", "").startswith("podcast")
     with sf.SoundFile(str(wav_path), mode="w", samplerate=sr, channels=1, subtype="PCM_16") as full:
+        if is_podcast:
+            jingle_intro = ai_features.generate_podcast_jingle(sr, is_intro=True)
+            full.write(jingle_intro)
+            full.write(np.zeros(int(sr * 0.35), dtype=np.float32))
+            job.duration += 2.55
+
         for i, chunk in enumerate(job.chunks):
             job.check_cancel()
             spoken = normalize_for_tts(chunk, job.lang).strip() or chunk.strip()
@@ -604,6 +621,12 @@ def _run_job_sync(job: Job, state) -> None:
             job.duration += dur + gap
             job.chunks_ready = i + 1
             job.progress("tts", 50 + int(45 * (i + 1) / total), f"Gerando voz… bloco {i + 1} de {total}")
+
+        if is_podcast:
+            full.write(np.zeros(int(sr * 0.25), dtype=np.float32))
+            jingle_outro = ai_features.generate_podcast_jingle(sr, is_intro=False)
+            full.write(jingle_outro)
+            job.duration += 2.05
     job.progress("encode", 96, "Montando o arquivo…")
     fmt = job.format
     out = job.dir / f"full.{fmt}"
@@ -876,7 +899,7 @@ def build_app() -> FastAPI:
         lang: Optional[str] = Form(None), speed: Optional[float] = Form(None),
         response_format: str = Form("mp3"), file: Optional[UploadFile] = File(None),
         pause: Optional[float] = Form(None), pages: Optional[str] = Form(None),
-        mode: str = Form("normal"), translate: bool = Form(False),
+        mode: str = Form("normal"), translate: bool = Form(False), smart_skip: bool = Form(False),
     ):
         if state.tts is None:
             return _err(503, "Modelo ainda carregando. Tente em alguns segundos.", "model_loading", "server_error")
@@ -896,8 +919,11 @@ def build_app() -> FastAPI:
             return _err(e.status, e.message, e.code)
         _ensure_workers()
         pause_s = DEFAULT_PARAGRAPH_PAUSE if pause is None else max(0.0, min(3.0, float(pause)))
+        mode_str = str(getattr(mode, "default", mode) if hasattr(mode, "default") else (mode or "normal"))
+        translate_bool = bool(getattr(translate, "default", translate) if hasattr(translate, "default") else translate)
+        smart_skip_bool = bool(getattr(smart_skip, "default", smart_skip) if hasattr(smart_skip, "default") else smart_skip)
         job = Job(voice=voice or "F1", lang=(lang or DEFAULT_LANG), speed=speed, format=fmt, pause=pause_s,
-                  pages=(pages or "").strip() or None, mode=mode, translate=translate, **inputs)
+                  pages=(pages or "").strip() or None, mode=mode_str, translate=translate_bool, smart_skip=smart_skip_bool, **inputs)
         job.transcribe_only = bool(inputs.get("url") and request.url.path == "/usar")
         try:
             QUEUE.put_nowait(job)
@@ -1057,6 +1083,17 @@ def build_app() -> FastAPI:
             return _err(404, "Supabase não configurado.", "not_configured")
         ok = await asyncio.to_thread(supabase_persistence.delete_saved_document, job_uuid)
         return JSONResponse({"success": ok})
+
+    @app.get("/api/feed.xml", include_in_schema=False)
+    @app.get("/feed.xml", include_in_schema=False)
+    async def podcast_rss_feed(request: Request):
+        import ai_features
+        base_url = str(request.base_url).rstrip("/")
+        if request.client and trusted_peer(request.client.host, TRUSTED_PROXIES) and request.headers.get("x-forwarded-proto") == "https":
+            base_url = "https://" + base_url.split("://", 1)[1]
+        docs = await asyncio.to_thread(supabase_persistence.list_saved_documents)
+        xml_content = ai_features.build_podcast_rss_feed(docs, base_url)
+        return Response(content=xml_content, media_type="application/rss+xml; charset=utf-8")
 
     @app.get("/manifest.webmanifest", include_in_schema=False)
     async def manifest():
