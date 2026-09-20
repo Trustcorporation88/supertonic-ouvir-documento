@@ -534,3 +534,119 @@ audio { width: 100%; display: block; height: 40px; }
   align-items: center;
   gap: 8px;
 }
+
+/* ---------- Guide Button & Modal Styles ---------- */
+.guide-pill {
+  cursor: pointer;
+  background: var(--card-2);
+  border: 1px solid var(--acc-line);
+  color: var(--acc-2);
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 14px;
+  font-weight: 600;
+  transition: all .15s ease;
+}
+.guide-pill:hover {
+  background: var(--acc);
+  color: #ffffff;
+  border-color: var(--acc);
+  box-shadow: 0 0 12px var(--acc-soft);
+}
+
+.hero-guide-cta {
+  margin-top: 10px;
+  display: flex;
+  justify-content: center;
+}
+.hero-guide-btn {
+  background: transparent;
+  border: 1px dashed var(--acc-line);
+  color: var(--acc-2);
+  padding: 6px 16px;
+  border-radius: 99px;
+  font-size: .84rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: all .15s ease;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.hero-guide-btn:hover {
+  background: var(--acc-soft);
+  border-color: var(--acc);
+  transform: translateY(-1px);
+}
+
+.guide-modal-card {
+  max-width: 720px;
+}
+.guide-content {
+  padding: 16px 22px;
+  overflow-y: auto;
+  max-height: calc(85vh - 130px);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.guide-section {
+  background: var(--card-2);
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 14px 16px;
+}
+.guide-section h3 {
+  font-size: 1rem;
+  margin: 0 0 8px;
+  color: var(--text);
+  font-weight: 600;
+}
+.guide-section ul {
+  margin: 0;
+  padding-left: 20px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: .85rem;
+  line-height: 1.45;
+}
+.guide-section ul strong {
+  color: var(--text);
+}
+.guide-section code {
+  background: var(--card);
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-size: .8rem;
+  border: 1px solid var(--line-2);
+  color: var(--acc-2);
+}
+.guide-subtags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.guide-subtags .subtag {
+  font-size: .72rem;
+  background: var(--card);
+  border: 1px solid var(--line-2);
+  color: var(--text);
+  padding: 2px 8px;
+  border-radius: 99px;
+}
+.guide-keys {
+  margin-top: 6px;
+  color: var(--muted-2);
+  font-size: .8rem;
+}
+.modal-footer {
+  padding: 12px 20px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  justify-content: flex-end;
+  background: var(--card);
+}

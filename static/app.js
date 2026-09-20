@@ -654,6 +654,27 @@
     }
   });
 
+  // ---------------------------------------------------------------- Guia Como Usar
+  const guideBtn = $("guide-btn"), heroGuideBtn = $("hero-guide-btn"), guideModal = $("guide-modal");
+  const closeGuide = $("close-guide"), gotItBtn = $("got-it-btn");
+
+  function openGuide() {
+    if (guideModal) guideModal.hidden = false;
+  }
+  function hideGuide() {
+    if (guideModal) guideModal.hidden = true;
+  }
+
+  if (guideBtn) guideBtn.onclick = openGuide;
+  if (heroGuideBtn) heroGuideBtn.onclick = openGuide;
+  if (closeGuide) closeGuide.onclick = hideGuide;
+  if (gotItBtn) gotItBtn.onclick = hideGuide;
+  if (guideModal) {
+    guideModal.onclick = (e) => {
+      if (e.target === guideModal) hideGuide();
+    };
+  }
+
   // ---------------------------------------------------------------- Biblioteca Supabase
   const libraryBtn = $("library-btn"), libraryModal = $("library-modal");
   const closeLibrary = $("close-library"), libraryList = $("library-items"), libraryCount = $("library-count");

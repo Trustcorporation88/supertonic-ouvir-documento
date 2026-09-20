@@ -24,6 +24,9 @@
       <span class="pill" id="health" title="Estado do servidor">
         <span class="dot"></span><span id="health-text">conectando…</span>
       </span>
+      <button class="pill guide-pill" id="guide-btn" type="button" title="Guia completo de funcionalidades">
+        <span>💡 Como usar seu SuperTonic</span>
+      </button>
       <button class="pill library-pill" id="library-btn" type="button" title="Biblioteca de Áudios Salvos no Supabase">
         <span>📚 Meus Áudios</span>
         <span class="badge" id="library-count" hidden>0</span>
@@ -38,7 +41,12 @@
   <main id="main">
     <section class="hero">
       <h1>Ouvir documento</h1>
-      <p class="lead">Mande um PDF, EPUB, um texto ou o link de um vídeo. O SuperTonic lê, transcreve e gera o áudio.</p>
+      <p class="lead">Mande um PDF, EPUB, um texto ou o link de um vídeo. O SuperTonic lê, resume, debate e gera o áudio.</p>
+      <div class="hero-guide-cta">
+        <button class="hero-guide-btn" id="hero-guide-btn" type="button">
+          <span>💡 Como usar seu SuperTonic (Guia Completo)</span>
+        </button>
+      </div>
     </section>
 
     <div class="tabs" role="tablist" aria-label="Tipo de entrada">
@@ -212,6 +220,83 @@
       <p class="modal-desc">Seus áudios gerados e salvos no Supabase Storage. Ouça direto ou baixe o arquivo.</p>
       <div class="library-items" id="library-items">
         <p class="hint">Carregando documentos…</p>
+      </div>
+    </div>
+  </div>
+
+  <div class="modal-backdrop" id="guide-modal" hidden>
+    <div class="modal-card guide-modal-card" role="dialog" aria-modal="true" aria-labelledby="guide-title">
+      <div class="modal-head">
+        <div class="modal-title-group">
+          <h2 id="guide-title">💡 Como Usar Seu SuperTonic</h2>
+          <span class="pill ok">Guia Interativo</span>
+        </div>
+        <button class="icon-btn" id="close-guide" type="button" aria-label="Fechar Guia">✕</button>
+      </div>
+      <div class="guide-content">
+        <div class="guide-section">
+          <h3>1. 📁 Envio de Documentos &amp; Mídia</h3>
+          <ul>
+            <li><strong>Formatos Suportados:</strong> PDF, EPUB (livros digitais), Word (.docx), TXT, Markdown (.md), CSV, Legendas (.srt, .vtt).</li>
+            <li><strong>Imagens &amp; OCR:</strong> Envie fotos ou capturas de tela (.png, .jpg) para extração óptica automática de texto.</li>
+            <li><strong>Áudio, Vídeo &amp; YouTube:</strong> Carregue arquivos de áudio/vídeo ou cole o link do YouTube para transcrever e narrar.</li>
+            <li><strong>Seleção de Páginas:</strong> Em PDFs longos, você pode ler apenas trechos específicos digitando por exemplo <code>3-10, 15</code>.</li>
+          </ul>
+        </div>
+
+        <div class="guide-section">
+          <h3>2. 🤖 Modos Inteligentes de Áudio (IA)</h3>
+          <ul>
+            <li><strong>🎙️ Narração Completa:</strong> Lê palavra por palavra com fidelidade absoluta ao texto original.</li>
+            <li><strong>📝 Resumo Executivo (IA):</strong> Transforma relatórios, artigos e livros densos em um áudio curto e objetivo com os pontos centrais.</li>
+            <li><strong>📻 Modo Podcast (Debate c/ 2 Vozes - Estilo NotebookLM):</strong> Transforma o conteúdo em um diálogo natural entre dois apresentadores (Mulher 1 e Homem 1), com vinhetas musicais de estúdio na abertura e encerramento:
+              <div class="guide-subtags">
+                <span class="subtag">Descontraído &amp; Curioso</span>
+                <span class="subtag">Executivo &amp; Negócios</span>
+                <span class="subtag">Didático / Aula</span>
+                <span class="subtag">Debate Crítico</span>
+              </div>
+            </li>
+            <li><strong>🌐 Tradução de Documentos:</strong> Envie arquivos em inglês, espanhol, francês, etc., e o SuperTonic traduz e narra com sotaque nativo em português do Brasil.</li>
+          </ul>
+        </div>
+
+        <div class="guide-section">
+          <h3>3. 🎧 Formatos de Saída &amp; Audiolivros</h3>
+          <ul>
+            <li><strong>MP3:</strong> Arquivo comprimido ultraleve, otimizado para ouvir rapidamente e compartilhar pelo WhatsApp.</li>
+            <li><strong>M4B (Audiolivro com Capítulos):</strong> Gera um arquivo de audiolivro padrão com capítulos navegáveis e capa, compatível com Apple Books, Audible e tocadores automotivos.</li>
+            <li><strong>WAV, OGG, FLAC:</strong> Áudio de estúdio de máxima fidelidade sem perdas de frequência.</li>
+          </ul>
+        </div>
+
+        <div class="guide-section">
+          <h3>4. ✨ Modo Karaokê &amp; Leitura Sincronizada</h3>
+          <ul>
+            <li><strong>Destaque em Tempo Real:</strong> O trecho exato que está sendo falado ganha destaque e sublinhado na tela.</li>
+            <li><strong>Rolagem Automática (Auto-Scroll):</strong> A tela rola suavemente acompanhando a leitura sem você precisar mexer no mouse.</li>
+            <li><strong>Navegação Interativa:</strong> Clique em qualquer frase do texto na tela para o áudio saltar instantaneamente para aquele ponto!</li>
+            <li><strong>✨ Smart Skip:</strong> Remove números de páginas soltos, rodapés e notas [1] para o áudio não travar a fluidez.</li>
+            <li><strong>Atalhos de Teclado:</strong>
+              <div class="guide-keys">
+                <code>Espaço</code>: Play / Pausar &nbsp;|&nbsp;
+                <code>← / →</code>: Voltar / Avançar 5s &nbsp;|&nbsp;
+                <code>Ctrl + Enter</code>: Iniciar Geração
+              </div>
+            </li>
+          </ul>
+        </div>
+
+        <div class="guide-section">
+          <h3>5. ☁️ Sua Biblioteca na Nuvem &amp; Podcast no Celular</h3>
+          <ul>
+            <li><strong>📚 Meus Áudios:</strong> Clique no botão do topo para ver todos os áudios já gerados, salvos no Supabase Storage.</li>
+            <li><strong>📡 Feed RSS para Smartphone &amp; Carro:</strong> No menu "Meus Áudios", clique em <code>Feed RSS</code> e copie o link. Cole-o no <strong>Apple Podcasts</strong> (iPhone: <em>Biblioteca ➔ Seguir por URL</em>), <strong>Pocket Casts</strong> ou <strong>Spotify</strong> para ouvir seus documentos direto no celular ou no som do carro via CarPlay / Android Auto!</li>
+          </ul>
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn primary" id="got-it-btn" type="button">Entendi, vamos começar!</button>
       </div>
     </div>
   </div>
