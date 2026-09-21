@@ -206,11 +206,11 @@ def build_podcast_rss_feed(items: list[dict], base_url: str) -> str:
         "xmlns:content": "http://purl.org/rss/1.0/modules/content/",
     })
     channel = ET.SubElement(rss, "channel")
-    ET.SubElement(channel, "title").text = "SuperTonic — Meus Documentos & Podcasts"
+    ET.SubElement(channel, "title").text = "TrustVoice — Meus Documentos & Podcasts"
     ET.SubElement(channel, "link").text = base
     ET.SubElement(channel, "language").text = "pt-br"
-    ET.SubElement(channel, "description").text = "Feed pessoal privado de documentos, audiolivros e podcasts gerados pelo SuperTonic."
-    ET.SubElement(channel, "itunes:author").text = "SuperTonic"
+    ET.SubElement(channel, "description").text = "Feed pessoal privado de documentos, audiolivros e podcasts gerados pelo TrustVoice."
+    ET.SubElement(channel, "itunes:author").text = "TrustVoice (Trust Corporation)"
     ET.SubElement(channel, "itunes:image", {"href": f"{base}/static/icon-512.png"})
     cat = ET.SubElement(channel, "itunes:category", {"text": "Technology"})
     ET.SubElement(cat, "itunes:category", {"text": "Podcasts"})
@@ -219,7 +219,7 @@ def build_podcast_rss_feed(items: list[dict], base_url: str) -> str:
         item = ET.SubElement(channel, "item")
         title = it.get("title") or "Documento em Áudio"
         ET.SubElement(item, "title").text = title
-        ET.SubElement(item, "description").text = it.get("preview") or "Áudio gerado no SuperTonic"
+        ET.SubElement(item, "description").text = it.get("preview") or "Áudio gerado no TrustVoice"
         guid = it.get("job_uuid") or it.get("id") or "doc"
         ET.SubElement(item, "guid", {"isPermaLink": "false"}).text = str(guid)
 

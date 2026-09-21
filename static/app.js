@@ -334,7 +334,7 @@
       const j = await (await api(`/api/jobs/${shareJobId}/share`, { method: "POST", body: fd })).json();
       let copied = false;
       try { await navigator.clipboard.writeText(j.url); copied = true; } catch {}
-      if (navigator.share && !copied) { try { await navigator.share({ title: "Áudio do SuperTonic", url: j.url }); } catch {} }
+      if (navigator.share && !copied) { try { await navigator.share({ title: "Áudio do TrustVoice", url: j.url }); } catch {} }
       shareBtn.textContent = copied ? "Link copiado ✓" : "Link criado";
       say(`Link válido por 24 h: ${j.url}`, "ok");
     } catch (e) { shareBtn.textContent = "Compartilhar"; say(e.message, "err"); }
@@ -604,7 +604,7 @@
           const blob = await readWithRetry(j.audio_url, "blob", signal);
           if (signal.aborted || currentJob !== job.id) return;
           const ext = j.format;
-          const filename = `supertonic-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}.${ext}`;
+          const filename = `trustvoice-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, "-")}.${ext}`;
           const url = URL.createObjectURL(blob);
           play.finalUrl = url;
           setDownload(url, filename);
@@ -731,7 +731,7 @@
             <span class="doc-card-meta">${dateStr}</span>
             <div class="doc-card-actions">
               <button type="button" class="btn-sm play-doc" data-url="${doc.audio_url}">▶ Ouvir</button>
-              <a class="btn-sm" href="${doc.audio_url}" target="_blank" download="supertonic-${doc.job_uuid}.${doc.format}">⬇ Baixar</a>
+              <a class="btn-sm" href="${doc.audio_url}" target="_blank" download="trustvoice-${doc.job_uuid}.${doc.format}">⬇ Baixar</a>
               <button type="button" class="btn-sm del del-doc" data-uuid="${doc.job_uuid}">Excluir</button>
             </div>
           </div>

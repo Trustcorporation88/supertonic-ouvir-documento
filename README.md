@@ -1,7 +1,10 @@
-# SuperTonic — ouvir documento
+# TrustVoice — Ouvir Documento | Trust Corporation
 
-Interface web + API para transformar **PDF, Word, texto, imagem, áudio ou vídeo** em áudio com vozes naturais,
-usando o [Supertonic TTS](https://github.com/supertone-inc/supertonic) (ONNX, roda em CPU).
+Plataforma inteligente de transformação de documentos em áudio, resumos e podcasts com IA.
+Acesse: [https://trustvoice.trustcorp.com.br](https://trustvoice.trustcorp.com.br)
+
+Interface web + API para transformar **PDF, EPUB, Word, texto, imagem, áudio ou vídeo** em áudio com vozes naturais,
+usando IA generativa e síntese vocal de alta performance (ONNX, roda em CPU).
 
 ![screenshot](docs/screenshot.png)
 

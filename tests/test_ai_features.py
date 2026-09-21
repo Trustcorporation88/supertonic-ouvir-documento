@@ -60,11 +60,11 @@ def test_podcast_rss_feed_generation():
             "audio_url": "/api/documents/11111111-2222-3333-4444-555555555555/audio",
         }
     ]
-    xml = ai_features.build_podcast_rss_feed(sample_items, "https://supertonic.app")
+    xml = ai_features.build_podcast_rss_feed(sample_items, "https://trustvoice.trustcorp.com.br")
     assert "<rss" in xml
-    assert "<itunes:author>SuperTonic</itunes:author>" in xml
+    assert "<itunes:author>TrustVoice (Trust Corporation)</itunes:author>" in xml
     assert "Episódio 1: Relatório Anual" in xml
-    assert "https://supertonic.app/api/documents/11111111-2222-3333-4444-555555555555/audio" in xml
+    assert "https://trustvoice.trustcorp.com.br/api/documents/11111111-2222-3333-4444-555555555555/audio" in xml
 
 
 def test_podcast_styles_script_generation():

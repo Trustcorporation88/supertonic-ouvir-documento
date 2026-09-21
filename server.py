@@ -796,19 +796,19 @@ def _rate_limited(request: Request) -> Optional[int]:
 
 def _share_page(meta: Dict[str, Any], token: str) -> str:
     text = html.escape(meta.get("text", ""))
-    title = html.escape(meta.get("title") or "Áudio do SuperTonic")
+    title = html.escape(meta.get("title") or "Áudio do TrustVoice")
     dur = meta.get("duration", 0)
     mins, secs = int(dur // 60), int(dur % 60)
     exp = time.strftime("%d/%m/%Y %H:%M", time.localtime(meta["expires"]))
     return f"""<!DOCTYPE html><html lang="pt-BR"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>{title} — SuperTonic</title><link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/static/styles.css">
-<meta property="og:title" content="{title}"><meta property="og:description" content="Áudio de {mins}min {secs:02d}s gerado com SuperTonic">
-</head><body><header class="top"><div class="brand"><img src="/favicon.svg" alt="" width="22" height="22"><span>SuperTonic</span></div><a class="link" href="/">Criar o meu</a></header>
+<title>{title} — TrustVoice</title><link rel="icon" href="/favicon.svg"><link rel="stylesheet" href="/static/styles.css">
+<meta property="og:title" content="{title}"><meta property="og:description" content="Áudio de {mins}min {secs:02d}s gerado com TrustVoice">
+</head><body><header class="top"><div class="brand"><img src="/favicon.svg" alt="" width="22" height="22"><span>TrustVoice</span></div><a class="link" href="/">Criar o meu</a></header>
 <main><section class="hero"><h1>{title}</h1><p class="lead">{mins}min {secs:02d}s · {html.escape(meta.get("voice_label", ""))} · link válido até {exp}</p></section>
 <section class="result"><audio controls preload="metadata" src="/s/{token}/audio"></audio>
 <div class="result-actions"><a class="btn primary" href="/s/{token}/audio" download="{html.escape(meta.get("filename", "audio"))}">Baixar</a></div>
 <div class="text" style="max-height:none">{text}</div></section></main>
-<footer class="foot"><span>Supertonic TTS · roda em CPU</span><a href="/">supertonic</a></footer></body></html>"""
+<footer class="foot"><span>TrustVoice · Trust Corporation · Powered by Supertonic TTS</span><a href="/">trustvoice</a></footer></body></html>"""
 
 
 # ---------------------------------------------------------------------------
@@ -959,7 +959,7 @@ def build_app() -> FastAPI:
         job = JOBS.get(job_id)
         if job and job.status == "done" and job.final and Path(job.final).exists():
             mime = "audio/mpeg" if job.format == "mp3" else format_to_mime(job.format)
-            return FileResponse(job.final, media_type=mime, filename=f"supertonic-{job.id}.{job.format}",
+            return FileResponse(job.final, media_type=mime, filename=f"trustvoice-{job.id}.{job.format}",
                                 headers={"Cache-Control": "private, max-age=86400"})
         if supabase_persistence.is_enabled():
             fmt = job.format if job else "mp3"
@@ -981,7 +981,7 @@ def build_app() -> FastAPI:
         shutil.copyfile(job.final, d / f"audio.{ext}")
         expires = time.time() + SHARE_TTL_SECONDS
         meta = {"text": job.text, "title": (title or "").strip()[:120] or None, "duration": job.duration, "format": ext,
-                "voice_label": job.voice, "filename": f"supertonic-{token}.{ext}", "expires": expires}
+                "voice_label": job.voice, "filename": f"trustvoice-{token}.{ext}", "expires": expires}
         (d / "meta.json").write_text(json.dumps(meta, ensure_ascii=False))
         base = str(request.base_url).rstrip("/")
         if request.client and trusted_peer(request.client.host, TRUSTED_PROXIES) and request.headers.get("x-forwarded-proto") == "https":
@@ -1004,7 +1004,7 @@ def build_app() -> FastAPI:
     async def share_page(token: str):
         m = _share_meta(token)
         if not m:
-            return Response("<h1>Link expirado ou inválido.</h1><p><a href='/'>Voltar ao SuperTonic</a></p>",
+            return Response("<h1>Link expirado ou inválido.</h1><p><a href='/'>Voltar ao TrustVoice</a></p>",
                             status_code=404, media_type="text/html")
         return Response(_share_page(m, token), media_type="text/html")
 

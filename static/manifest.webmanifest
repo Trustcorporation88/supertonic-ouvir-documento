@@ -1,12 +1,12 @@
 {
-  "name": "SuperTonic — ouvir documento",
-  "short_name": "SuperTonic",
-  "description": "Transforme PDF, texto ou vídeo em áudio com vozes naturais.",
+  "name": "TrustVoice — Ouvir Documento",
+  "short_name": "TrustVoice",
+  "description": "Transforme PDF, EPUB, texto ou vídeo em áudio com inteligência artificial.",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
   "background_color": "#0c0f14",
-  "theme_color": "#3b82f6",
+  "theme_color": "#6d5cff",
   "lang": "pt-BR",
   "icons": [
     {
