@@ -414,3 +414,62 @@ def test_youtube_link_uses_ytdlp_without_generic_extractor(monkeypatch, tmp_path
     out = s._download_media('https://www.youtube.com/watch?v=GVEPQ5vddv0', str(tmp_path), lambda *a: None)
     assert out.endswith('media.m4a')
     assert '--use-extractors' in seen['cmd'] and 'default,-generic' in seen['cmd']
+
+
+COOKIE_LINE = '.youtube.com\tTRUE\t/\tTRUE\t1999999999\tSID\tabc123'
+
+
+def test_ytdlp_proxy_validation(monkeypatch):
+    for value, ok in [('http://u:p@proxy.example:8080', True), ('socks5h://1.2.3.4:1080', True),
+                      ('ftp://x', False), ('not a url', False), ('', False)]:
+        monkeypatch.setenv('YTDLP_PROXY', value)
+        assert bool(s.ytdlp_proxy()) is ok, value
+
+
+def test_ytdlp_cookies_raw_escaped_and_b64(monkeypatch):
+    import base64
+    monkeypatch.delenv('YTDLP_COOKIES_B64', raising=False)
+    monkeypatch.setenv('YTDLP_COOKIES', '# Netscape HTTP Cookie File\\n' + COOKIE_LINE.replace('\t', '\\t'))
+    assert COOKIE_LINE in s.ytdlp_cookies_text()
+    monkeypatch.delenv('YTDLP_COOKIES')
+    monkeypatch.setenv('YTDLP_COOKIES_B64', base64.b64encode(COOKIE_LINE.encode()).decode())
+    text = s.ytdlp_cookies_text()
+    assert text.startswith('# Netscape') and COOKIE_LINE in text
+    monkeypatch.setenv('YTDLP_COOKIES_B64', '%%%nope')
+    assert s.ytdlp_cookies_text() is None
+    monkeypatch.delenv('YTDLP_COOKIES_B64')
+    monkeypatch.setenv('YTDLP_COOKIES', 'garbage without tabs')
+    assert s.ytdlp_cookies_text() is None
+
+
+def test_ytdlp_gets_proxy_and_private_cookie_file(monkeypatch, tmp_path):
+    import stat
+    monkeypatch.setattr(s, 'ALLOW_REMOTE_DOWNLOADS', False)
+    monkeypatch.setattr(s.shutil, 'which', lambda name: '/usr/bin/yt-dlp' if name == 'yt-dlp' else None)
+    monkeypatch.setenv('YTDLP_PROXY', 'http://u:p@proxy.example:8080')
+    monkeypatch.setenv('YTDLP_COOKIES', COOKIE_LINE)
+    seen = {}
+    def fake_run(cmd, **kw):
+        seen['cmd'] = cmd
+        seen['mode'] = stat.S_IMODE((tmp_path / 'cookies.txt').stat().st_mode)
+        (tmp_path / 'media.webm').write_bytes(b'x')
+        return s.subprocess.CompletedProcess(cmd, 0, '', '')
+    monkeypatch.setattr(s.subprocess, 'run', fake_run)
+    s._download_media('https://youtu.be/GVEPQ5vddv0', str(tmp_path), lambda *a: None)
+    cmd = seen['cmd']
+    assert cmd[cmd.index('--proxy') + 1] == 'http://u:p@proxy.example:8080'
+    assert cmd[cmd.index('--cookies') + 1] == str(tmp_path / 'cookies.txt')
+    assert seen['mode'] == 0o600
+
+
+def test_youtube_403_gives_actionable_message(monkeypatch, tmp_path):
+    monkeypatch.setattr(s, 'ALLOW_REMOTE_DOWNLOADS', False)
+    monkeypatch.delenv('YTDLP_PROXY', raising=False)
+    monkeypatch.delenv('YTDLP_COOKIES', raising=False)
+    monkeypatch.delenv('YTDLP_COOKIES_B64', raising=False)
+    monkeypatch.setattr(s.shutil, 'which', lambda name: '/usr/bin/yt-dlp' if name == 'yt-dlp' else None)
+    monkeypatch.setattr(s.subprocess, 'run', lambda cmd, **kw: s.subprocess.CompletedProcess(
+        cmd, 1, '', 'ERROR: unable to download video data: HTTP Error 403: Forbidden'))
+    with pytest.raises(s.UsarError) as e:
+        s._download_media('https://www.youtube.com/watch?v=x', str(tmp_path), lambda *a: None)
+    assert e.value.code == 'youtube_blocked' and 'YTDLP_PROXY' in e.value.message

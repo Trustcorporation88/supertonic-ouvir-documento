@@ -4,4 +4,5 @@ python-docx>=1.1
 num2words>=0.5.13
 requests>=2.31
 supabase>=2.3.0
-yt-dlp>=2025.6.9
+yt-dlp[default]>=2026.10.26
+deno>=2.0

@@ -365,6 +365,67 @@ def remote_url_allowed(url: str) -> bool:
     return ALLOW_REMOTE_DOWNLOADS or (ALLOW_VIDEO_PLATFORMS and is_video_platform_url(url))
 
 
+_PROXY_SCHEMES = {"http", "https", "socks5", "socks5h", "socks4", "socks4a"}
+
+
+def ytdlp_proxy() -> Optional[str]:
+    """YTDLP_PROXY: proxy residencial usado só pelo yt-dlp (ex.: http://usuario:senha@host:porta)."""
+    value = (os.environ.get("YTDLP_PROXY") or "").strip()
+    if not value:
+        return None
+    try:
+        parsed = urllib.parse.urlparse(value)
+        parsed.port
+    except ValueError:
+        logger.warning("YTDLP_PROXY inválido; ignorando")
+        return None
+    if parsed.scheme.lower() not in _PROXY_SCHEMES or not parsed.hostname:
+        logger.warning("YTDLP_PROXY precisa começar com http://, https:// ou socks5://; ignorando")
+        return None
+    return value
+
+
+def ytdlp_cookies_text() -> Optional[str]:
+    """YTDLP_COOKIES (texto do cookies.txt) ou YTDLP_COOKIES_B64 (o mesmo arquivo em base64)."""
+    import base64
+    import binascii
+
+    raw = (os.environ.get("YTDLP_COOKIES") or "").strip()
+    b64 = (os.environ.get("YTDLP_COOKIES_B64") or "").strip()
+    if b64:
+        try:
+            raw = base64.b64decode("".join(b64.split()), validate=True).decode("utf-8-sig")
+        except (binascii.Error, ValueError, UnicodeDecodeError):
+            logger.warning("YTDLP_COOKIES_B64 não é um base64 válido; ignorando")
+            return None
+    if not raw:
+        return None
+    text = raw.replace("\\r\\n", "\n").replace("\\n", "\n").replace("\r\n", "\n").replace("\\t", "\t")
+    lines = [ln for ln in text.split("\n") if ln.strip() and not ln.startswith("#")]
+    valid = [ln for ln in lines if len(ln.split("\t")) >= 7]
+    if not valid:
+        logger.warning("Cookies do yt-dlp não estão no formato Netscape (cookies.txt); ignorando")
+        return None
+    if not text.lstrip().startswith("# Netscape"):
+        text = "# Netscape HTTP Cookie File\n" + text
+    return text.rstrip("\n") + "\n"
+
+
+def _ytdlp_runtime_args(workdir: str) -> List[str]:
+    args: List[str] = []
+    proxy = ytdlp_proxy()
+    if proxy:
+        args += ["--proxy", proxy]
+    cookies = ytdlp_cookies_text()
+    if cookies:
+        cookie_file = os.path.join(workdir, "cookies.txt")
+        fd = os.open(cookie_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(cookies)
+        args += ["--cookies", cookie_file]
+    return args
+
+
 def _download_media(url: str, workdir: str, progress) -> str:
     if not remote_url_allowed(url):
         raise UsarError("Esse link não é de uma plataforma de vídeo suportada (YouTube, Vimeo, TikTok…). "
@@ -390,20 +451,21 @@ def _download_media(url: str, workdir: str, progress) -> str:
                 "--max-filesize", f"{MAX_UPLOAD_MB * 4}m", "-o", out_tpl]
         if platform_only:
             cmd += ["--use-extractors", "default,-generic"]
-        cookies = (os.environ.get("YTDLP_COOKIES") or "").strip()
-        if cookies:
-            cookie_file = os.path.join(workdir, "cookies.txt")
-            with open(cookie_file, "w", encoding="utf-8") as fh:
-                fh.write(cookies.replace("\\n", "\n") + "\n")
-            cmd += ["--cookies", cookie_file]
+        cmd += _ytdlp_runtime_args(workdir)
         cmd.append(url)
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
         if proc.returncode != 0:
             err = (proc.stderr or "").strip()
             last = (err.splitlines() or ["falha desconhecida"])[-1]
-            if "Sign in to confirm" in err or "not a bot" in err:
-                raise UsarError("O YouTube bloqueou o download a partir do servidor (pediu login anti-robô). "
-                                "Baixe o vídeo e envie na aba Arquivo.", 502, "youtube_blocked")
+            youtube = "youtu" in (parsed.hostname or "")
+            if "Sign in to confirm" in err or "not a bot" in err or (youtube and "403" in err):
+                if ytdlp_cookies_text() or ytdlp_proxy():
+                    msg = ("O YouTube recusou o download mesmo com cookies/proxy configurados. "
+                           "Os cookies podem ter expirado ou o proxy pode estar bloqueado.")
+                else:
+                    msg = ("O YouTube bloqueou o download a partir do servidor (anti-robô). "
+                           "Configure YTDLP_COOKIES_B64 ou YTDLP_PROXY no servidor, ou envie o arquivo na aba Arquivo.")
+                raise UsarError(msg, 502, "youtube_blocked")
             raise UsarError("Não consegui baixar o vídeo (" + last[:160] + "). Baixe o arquivo e envie na aba Arquivo.",
                             502, "download_failed")
     else:
@@ -909,7 +971,7 @@ def build_app() -> FastAPI:
             "ocr": _has("pytesseract") and shutil.which("tesseract") is not None,
             "video": bool(FFMPEG) and (bool(OPENAI_KEY) or _has("faster_whisper")),
             "transcriber": "openai" if OPENAI_KEY else ("local" if _has("faster_whisper") else None),
-            "remote_downloads": ALLOW_REMOTE_DOWNLOADS, "video_links": ALLOW_VIDEO_PLATFORMS and bool(shutil.which("yt-dlp") or _has("yt_dlp")), "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(), "rate_limit_per_hour": RATE_LIMIT_PER_HOUR,
+            "remote_downloads": ALLOW_REMOTE_DOWNLOADS, "video_links": ALLOW_VIDEO_PLATFORMS and bool(shutil.which("yt-dlp") or _has("yt_dlp")), "ytdlp_cookies": bool(ytdlp_cookies_text()), "ytdlp_proxy": bool(ytdlp_proxy()), "js_runtime": bool(shutil.which("deno")), "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(), "rate_limit_per_hour": RATE_LIMIT_PER_HOUR,
             "share_ttl_hours": SHARE_TTL_SECONDS // 3600, "cache": sum(1 for d in CACHE_DIR.iterdir() if d.is_dir()),
         }
 
