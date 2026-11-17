@@ -426,6 +426,19 @@ def _ytdlp_runtime_args(workdir: str) -> List[str]:
     return args
 
 
+def _redact_ytdlp_error(err: str) -> str:
+    """Última linha útil do yt-dlp, sem credenciais de proxy nem URLs com token."""
+    lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
+    last = next((ln for ln in reversed(lines) if ln.startswith("ERROR")), lines[-1] if lines else "falha desconhecida")
+    proxy = ytdlp_proxy()
+    if proxy:
+        last = last.replace(proxy, "[proxy]")
+    last = re.sub(r"//[^/@\s]+:[^/@\s]+@", "//[credenciais]@", last)
+    last = re.sub(r"\s*(Use --cookies|See\s+https?|Also see).*$", "", last)
+    last = re.sub(r"https?://\S+", "[url]", last)
+    return last[:220]
+
+
 def _download_media(url: str, workdir: str, progress) -> str:
     if not remote_url_allowed(url):
         raise UsarError("Esse link não é de uma plataforma de vídeo suportada (YouTube, Vimeo, TikTok…). "
@@ -452,21 +465,41 @@ def _download_media(url: str, workdir: str, progress) -> str:
         if platform_only:
             cmd += ["--use-extractors", "default,-generic"]
         cmd += _ytdlp_runtime_args(workdir)
-        cmd.append(url)
-        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
-        if proc.returncode != 0:
+        youtube = "youtu" in (parsed.hostname or "")
+        # O YouTube trata cada "cliente" de forma diferente; com cookies, tv/web_safari
+        # costumam passar quando o padrão é barrado. Tenta em sequência só se for bloqueio.
+        attempts = [[]]
+        if youtube:
+            attempts += [["--extractor-args", f"youtube:player_client={c}"]
+                         for c in ("tv", "web_safari", "mweb", "android_vr")]
+        errors = []
+        for n, extra in enumerate(attempts):
+            if n:
+                progress("download", 5, f"Tentando outro método do YouTube ({n + 1}/{len(attempts)})…")
+                for leftover in Path(workdir).glob("media.*"):
+                    leftover.unlink(missing_ok=True)
+            proc = subprocess.run(cmd + extra + [url], capture_output=True, text=True, timeout=900)
+            if proc.returncode == 0:
+                break
             err = (proc.stderr or "").strip()
-            last = (err.splitlines() or ["falha desconhecida"])[-1]
-            youtube = "youtu" in (parsed.hostname or "")
-            if "Sign in to confirm" in err or "not a bot" in err or (youtube and "403" in err):
+            errors.append(_redact_ytdlp_error(err))
+            blocked = "Sign in to confirm" in err or "not a bot" in err or (youtube and "403" in err)
+            if not blocked:
+                break
+        else:
+            blocked = True
+        if proc.returncode != 0:
+            detail = errors[-1] if errors else "falha desconhecida"
+            logger.warning("yt-dlp falhou (%d tentativas): %s", len(errors), " | ".join(errors))
+            if blocked:
                 if ytdlp_cookies_text() or ytdlp_proxy():
-                    msg = ("O YouTube recusou o download mesmo com cookies/proxy configurados. "
-                           "Os cookies podem ter expirado ou o proxy pode estar bloqueado.")
+                    msg = ("O YouTube recusou o download mesmo com cookies/proxy configurados "
+                           f"({len(errors)} métodos tentados). Detalhe: {detail}")
                 else:
                     msg = ("O YouTube bloqueou o download a partir do servidor (anti-robô). "
                            "Configure YTDLP_COOKIES_B64 ou YTDLP_PROXY no servidor, ou envie o arquivo na aba Arquivo.")
                 raise UsarError(msg, 502, "youtube_blocked")
-            raise UsarError("Não consegui baixar o vídeo (" + last[:160] + "). Baixe o arquivo e envie na aba Arquivo.",
+            raise UsarError("Não consegui baixar o vídeo (" + detail + "). Baixe o arquivo e envie na aba Arquivo.",
                             502, "download_failed")
     else:
         from urllib.request import urlopen

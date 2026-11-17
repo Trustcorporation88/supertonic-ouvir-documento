@@ -473,3 +473,33 @@ def test_youtube_403_gives_actionable_message(monkeypatch, tmp_path):
     with pytest.raises(s.UsarError) as e:
         s._download_media('https://www.youtube.com/watch?v=x', str(tmp_path), lambda *a: None)
     assert e.value.code == 'youtube_blocked' and 'YTDLP_PROXY' in e.value.message
+
+
+def test_youtube_retries_other_clients_then_succeeds(monkeypatch, tmp_path):
+    monkeypatch.setattr(s, 'ALLOW_REMOTE_DOWNLOADS', False)
+    monkeypatch.setenv('YTDLP_COOKIES', COOKIE_LINE)
+    monkeypatch.delenv('YTDLP_PROXY', raising=False)
+    monkeypatch.setattr(s.shutil, 'which', lambda name: '/usr/bin/yt-dlp' if name == 'yt-dlp' else None)
+    calls = []
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if len(calls) < 3:
+            return s.subprocess.CompletedProcess(cmd, 1, '', "ERROR: [youtube] x: Sign in to confirm you're not a bot. Use --cookies for auth")
+        (tmp_path / 'media.m4a').write_bytes(b'x')
+        return s.subprocess.CompletedProcess(cmd, 0, '', '')
+    monkeypatch.setattr(s.subprocess, 'run', fake_run)
+    assert s._download_media('https://www.youtube.com/watch?v=x', str(tmp_path), lambda *a: None).endswith('media.m4a')
+    assert len(calls) == 3 and 'youtube:player_client=web_safari' in calls[2]
+
+
+def test_youtube_all_clients_blocked_reports_redacted_detail(monkeypatch, tmp_path):
+    monkeypatch.setattr(s, 'ALLOW_REMOTE_DOWNLOADS', False)
+    monkeypatch.setenv('YTDLP_COOKIES', COOKIE_LINE)
+    monkeypatch.setenv('YTDLP_PROXY', 'http://user:secret@proxy.example:8080')
+    monkeypatch.setattr(s.shutil, 'which', lambda name: '/usr/bin/yt-dlp' if name == 'yt-dlp' else None)
+    err = "ERROR: unable to download via http://user:secret@proxy.example:8080 HTTP Error 403: Forbidden See  https://github.com/x"
+    monkeypatch.setattr(s.subprocess, 'run', lambda cmd, **kw: s.subprocess.CompletedProcess(cmd, 1, '', err))
+    with pytest.raises(s.UsarError) as e:
+        s._download_media('https://youtu.be/x', str(tmp_path), lambda *a: None)
+    assert e.value.code == 'youtube_blocked' and '5 métodos' in e.value.message
+    assert 'secret' not in e.value.message and '403' in e.value.message
