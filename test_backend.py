@@ -511,3 +511,27 @@ def test_cookie_summary_never_exposes_values(monkeypatch):
     info = s.ytdlp_cookie_summary()
     assert info['loaded'] and info['count'] == 2 and info['expired'] == 1 and info['login_cookies'] == ['SID']
     assert 'abc123' not in str(info) and 'zzz' not in str(info)
+
+
+def test_transcribe_empty_openai_result_is_no_speech(monkeypatch, tmp_path):
+    media = tmp_path / 'm.webm'; media.write_bytes(b'x')
+    monkeypatch.setattr(s, 'OPENAI_KEY', 'sk-test')
+    monkeypatch.setattr(s, '_to_compact_audio', lambda p, *a, **k: p)
+    monkeypatch.setattr(s, '_transcribe_openai', lambda *a: '')
+    monkeypatch.setattr(s, '_transcribe_local', lambda *a: pytest.fail('local fallback'))
+    with pytest.raises(s.UsarError) as e:
+        s._transcribe(str(media), 'pt', lambda *a: None)
+    assert e.value.code == 'no_speech'
+
+
+def test_transcribe_openai_failure_without_local_reports_reason(monkeypatch, tmp_path):
+    media = tmp_path / 'm.webm'; media.write_bytes(b'x')
+    monkeypatch.setattr(s, 'OPENAI_KEY', 'sk-test')
+    monkeypatch.setattr(s, '_to_compact_audio', lambda p, *a, **k: p)
+    def boom(*a):
+        raise RuntimeError('OpenAI 401: Incorrect API key provided: sk-proj-abc123')
+    monkeypatch.setattr(s, '_transcribe_openai', boom)
+    monkeypatch.setattr(s, '_has', lambda name: False)
+    with pytest.raises(s.UsarError) as e:
+        s._transcribe(str(media), 'pt', lambda *a: None)
+    assert e.value.code == 'transcription_failed' and '401' in e.value.message and 'abc123' not in e.value.message

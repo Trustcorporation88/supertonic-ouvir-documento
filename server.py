@@ -335,15 +335,24 @@ def _transcribe(path: str, lang: Optional[str], progress) -> str:
         except Exception as e:
             logger.warning("ffmpeg falhou (%s); usando arquivo original", e)
             src = path
+        openai_error = None
         if OPENAI_KEY:
             try:
                 text = _transcribe_openai(src, lang, progress)
-                if text:
-                    return clean_layout(text)
             except (UsarError, Cancelled):
                 raise
             except Exception as e:
-                logger.warning("OpenAI transcription falhou, usando local: %s", e)
+                openai_error = re.sub(r"sk-[A-Za-z0-9_*\-]+", "sk-…", str(e))[:220]
+                logger.warning("OpenAI transcription falhou: %s", openai_error)
+            else:
+                if text:
+                    return clean_layout(text)
+                raise UsarError("Não encontrei fala nesse vídeo para transcrever (pode ser só música ou sem narração).",
+                                422, "no_speech")
+        if not _has("faster_whisper"):
+            if openai_error:
+                raise UsarError(f"A transcrição pela OpenAI falhou: {openai_error}", 502, "transcription_failed")
+            raise UsarError("Nenhum transcritor configurado. Defina OPENAI_API_KEY no servidor.", 503, "no_transcriber")
         return clean_layout(_transcribe_local(src, lang, progress))
 
 
