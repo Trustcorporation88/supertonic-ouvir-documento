@@ -535,3 +535,19 @@ def test_transcribe_openai_failure_without_local_reports_reason(monkeypatch, tmp
     with pytest.raises(s.UsarError) as e:
         s._transcribe(str(media), 'pt', lambda *a: None)
     assert e.value.code == 'transcription_failed' and '401' in e.value.message and 'abc123' not in e.value.message
+
+
+def test_transcribe_local_crash_reports_both_reasons(monkeypatch, tmp_path):
+    media = tmp_path / 'm.webm'; media.write_bytes(b'x')
+    monkeypatch.setattr(s, 'OPENAI_KEY', 'sk-test')
+    monkeypatch.setattr(s, '_to_compact_audio', lambda p, *a, **k: p)
+    def boom(*a):
+        raise RuntimeError('OpenAI 429: insufficient_quota')
+    def local(*a):
+        raise MemoryError('no RAM')
+    monkeypatch.setattr(s, '_transcribe_openai', boom)
+    monkeypatch.setattr(s, '_has', lambda name: True)
+    monkeypatch.setattr(s, '_transcribe_local', local)
+    with pytest.raises(s.UsarError) as e:
+        s._transcribe(str(media), 'pt', lambda *a: None)
+    assert e.value.code == 'transcription_failed' and '429' in e.value.message and 'MemoryError' in e.value.message

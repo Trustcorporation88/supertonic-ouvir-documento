@@ -353,7 +353,15 @@ def _transcribe(path: str, lang: Optional[str], progress) -> str:
             if openai_error:
                 raise UsarError(f"A transcrição pela OpenAI falhou: {openai_error}", 502, "transcription_failed")
             raise UsarError("Nenhum transcritor configurado. Defina OPENAI_API_KEY no servidor.", 503, "no_transcriber")
-        return clean_layout(_transcribe_local(src, lang, progress))
+        try:
+            return clean_layout(_transcribe_local(src, lang, progress))
+        except (UsarError, Cancelled):
+            raise
+        except Exception as e:
+            logger.exception("Transcrição local falhou")
+            local_error = f"{type(e).__name__}: {e}"[:160]
+            reason = f"OpenAI: {openai_error} · local: {local_error}" if openai_error else local_error
+            raise UsarError(f"A transcrição falhou ({reason}).", 502, "transcription_failed") from e
 
 
 def is_video_platform_url(url: str) -> bool:
