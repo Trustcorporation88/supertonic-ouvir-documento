@@ -32,7 +32,7 @@ import threading
 import urllib.parse
 import uuid
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 import numpy as np
 import soundfile as sf
@@ -416,21 +416,49 @@ def remote_url_allowed(url: str) -> bool:
 _PROXY_SCHEMES = {"http", "https", "socks5", "socks5h", "socks4", "socks4a"}
 
 
-def ytdlp_proxy() -> Optional[str]:
-    """YTDLP_PROXY: proxy residencial usado só pelo yt-dlp (ex.: http://usuario:senha@host:porta)."""
-    value = (os.environ.get("YTDLP_PROXY") or "").strip()
-    if not value:
+def _normalize_proxy(entry: str) -> Optional[str]:
+    entry = entry.strip()
+    if not entry:
         return None
+    if "://" not in entry:
+        parts = entry.split(":")
+        if len(parts) == 4:            # formato Webshare/proxi.st: host:porta:usuario:senha
+            host, port, user, pwd = parts
+            entry = f"http://{urllib.parse.quote(user, safe='')}:{urllib.parse.quote(pwd, safe='')}@{host}:{port}"
+        elif len(parts) == 2:          # host:porta
+            entry = "http://" + entry
     try:
-        parsed = urllib.parse.urlparse(value)
+        parsed = urllib.parse.urlparse(entry)
         parsed.port
     except ValueError:
-        logger.warning("YTDLP_PROXY inválido; ignorando")
         return None
     if parsed.scheme.lower() not in _PROXY_SCHEMES or not parsed.hostname:
-        logger.warning("YTDLP_PROXY precisa começar com http://, https:// ou socks5://; ignorando")
         return None
-    return value
+    return entry
+
+
+def ytdlp_proxies() -> List[str]:
+    """YTDLP_PROXY: um ou vários proxies (separados por vírgula, espaço ou linha), usados só pelo yt-dlp.
+    Aceita http://usuario:senha@host:porta, socks5://... ou host:porta:usuario:senha."""
+    raw = os.environ.get("YTDLP_PROXY") or ""
+    out: List[str] = []
+    for item in re.split(r"[,\s]+", raw):
+        if not item.strip():
+            continue
+        proxy = _normalize_proxy(item)
+        if proxy is None:
+            logger.warning("Uma entrada de YTDLP_PROXY é inválida; ignorando")
+        elif proxy not in out:
+            out.append(proxy)
+    return out
+
+
+def ytdlp_proxy() -> Optional[str]:
+    proxies = ytdlp_proxies()
+    return proxies[0] if proxies else None
+
+
+_last_good_proxy: Dict[str, Optional[str]] = {"value": None}
 
 
 def ytdlp_cookies_text() -> Optional[str]:
@@ -481,27 +509,47 @@ def ytdlp_cookie_summary() -> Dict[str, Any]:
             "login_cookies": sorted(names & login_names)}
 
 
-def _ytdlp_runtime_args(workdir: str) -> List[str]:
-    args: List[str] = []
-    proxy = ytdlp_proxy()
-    if proxy:
-        args += ["--proxy", proxy]
+def _ytdlp_cookie_args(workdir: str) -> List[str]:
     cookies = ytdlp_cookies_text()
-    if cookies:
-        cookie_file = os.path.join(workdir, "cookies.txt")
-        fd = os.open(cookie_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
-            fh.write(cookies)
-        args += ["--cookies", cookie_file]
-    return args
+    if not cookies:
+        return []
+    cookie_file = os.path.join(workdir, "cookies.txt")
+    fd = os.open(cookie_file, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(cookies)
+    return ["--cookies", cookie_file]
+
+
+def _ytdlp_attempt_plan(youtube: bool, cookie_args: List[str]) -> List[Tuple[List[str], str]]:
+    """Lista de (argumentos extras, rótulo). Vários proxies = gira entre eles sem cookies
+    (a mesma sessão pulando de IP faz o Google derrubar o login)."""
+    clients = [["--extractor-args", f"youtube:player_client={c}"] for c in ("tv", "web_safari", "mweb", "android_vr")]
+    proxies = ytdlp_proxies() if youtube else []
+    if not proxies:
+        plan = [(cookie_args, "direto")]
+        if youtube:
+            plan += [(cookie_args + c, "direto") for c in clients]
+        return plan
+    if len(proxies) == 1:
+        px = ["--proxy", proxies[0]]
+        return [(px + cookie_args, "proxy")] + [(px + cookie_args + c, "proxy") for c in clients]
+    import random
+    last = _last_good_proxy["value"]
+    rest = [p for p in proxies if p != last]
+    random.shuffle(rest)
+    ordered = ([last] if last in proxies else []) + rest
+    plan = [(["--proxy", p], f"proxy {i + 1}/{len(ordered)}") for i, p in enumerate(ordered)]
+    plan += [(["--proxy", ordered[0]] + c, "proxy 1") for c in clients[:2]]
+    if cookie_args:
+        plan.append((cookie_args, "direto com cookies"))
+    return plan
 
 
 def _redact_ytdlp_error(err: str) -> str:
     """Última linha útil do yt-dlp, sem credenciais de proxy nem URLs com token."""
     lines = [ln.strip() for ln in (err or "").splitlines() if ln.strip()]
     last = next((ln for ln in reversed(lines) if ln.startswith("ERROR")), lines[-1] if lines else "falha desconhecida")
-    proxy = ytdlp_proxy()
-    if proxy:
+    for proxy in ytdlp_proxies():
         last = last.replace(proxy, "[proxy]")
     last = re.sub(r"//[^/@\s]+:[^/@\s]+@", "//[credenciais]@", last)
     last = re.sub(r"\s*(Use --cookies|See\s+https?|Also see).*$", "", last)
@@ -534,31 +582,29 @@ def _download_media(url: str, workdir: str, progress) -> str:
                 "--max-filesize", f"{MAX_UPLOAD_MB * 4}m", "-o", out_tpl]
         if platform_only:
             cmd += ["--use-extractors", "default,-generic"]
-        cmd += _ytdlp_runtime_args(workdir)
         youtube = "youtu" in (parsed.hostname or "")
-        # O YouTube trata cada "cliente" de forma diferente; com cookies, tv/web_safari
-        # costumam passar quando o padrão é barrado. Tenta em sequência só se for bloqueio.
-        attempts = [[]]
-        if youtube:
-            attempts += [["--extractor-args", f"youtube:player_client={c}"]
-                         for c in ("tv", "web_safari", "mweb", "android_vr")]
+        attempts = _ytdlp_attempt_plan(youtube, _ytdlp_cookie_args(workdir))
         errors = []
-        for n, extra in enumerate(attempts):
+        blocked = False
+        for n, (extra, label) in enumerate(attempts):
             if n:
-                progress("download", 5, f"Tentando outro método do YouTube ({n + 1}/{len(attempts)})…")
+                progress("download", 5, f"Tentando outro caminho para o YouTube ({n + 1}/{len(attempts)}, {label})…")
                 for leftover in Path(workdir).glob("media.*"):
                     leftover.unlink(missing_ok=True)
             proc = subprocess.run(cmd + extra + [url], capture_output=True, text=True, timeout=900)
             if proc.returncode == 0:
+                if "--proxy" in extra:
+                    _last_good_proxy["value"] = extra[extra.index("--proxy") + 1]
                 break
             err = (proc.stderr or "").strip()
             errors.append(_redact_ytdlp_error(err))
+            low = err.lower()
+            proxy_fail = "--proxy" in extra and ("proxy" in low or "timed out" in low or "connection" in low)
             blocked = "Sign in to confirm" in err or "not a bot" in err or (youtube and "403" in err)
-            if not blocked:
+            if not (blocked or proxy_fail):
                 break
-        else:
-            blocked = True
         if proc.returncode != 0:
+            blocked = blocked or any(("not a bot" in e) or ("Sign in" in e) or (youtube and "403" in e) for e in errors)
             detail = errors[-1] if errors else "falha desconhecida"
             logger.warning("yt-dlp falhou (%d tentativas): %s", len(errors), " | ".join(errors))
             if blocked:
@@ -1075,7 +1121,7 @@ def build_app() -> FastAPI:
             "ocr": _has("pytesseract") and shutil.which("tesseract") is not None,
             "video": bool(FFMPEG) and (bool(OPENAI_KEY) or _has("faster_whisper")),
             "transcriber": "openai" if OPENAI_KEY else ("local" if _has("faster_whisper") else None), "llm": __import__("ai_features").llm_provider(),
-            "remote_downloads": ALLOW_REMOTE_DOWNLOADS, "video_links": ALLOW_VIDEO_PLATFORMS and bool(shutil.which("yt-dlp") or _has("yt_dlp")), "ytdlp_cookies": bool(ytdlp_cookies_text()), "ytdlp_proxy": bool(ytdlp_proxy()), "js_runtime": bool(shutil.which("deno")), "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(), "rate_limit_per_hour": RATE_LIMIT_PER_HOUR,
+            "remote_downloads": ALLOW_REMOTE_DOWNLOADS, "video_links": ALLOW_VIDEO_PLATFORMS and bool(shutil.which("yt-dlp") or _has("yt_dlp")), "ytdlp_cookies": bool(ytdlp_cookies_text()), "ytdlp_proxy": bool(ytdlp_proxy()), "ytdlp_proxies": len(ytdlp_proxies()), "js_runtime": bool(shutil.which("deno")), "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(), "rate_limit_per_hour": RATE_LIMIT_PER_HOUR,
             "share_ttl_hours": SHARE_TTL_SECONDS // 3600, "cache": sum(1 for d in CACHE_DIR.iterdir() if d.is_dir()),
         }
 

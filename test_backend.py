@@ -459,7 +459,7 @@ def test_ytdlp_gets_proxy_and_private_cookie_file(monkeypatch, tmp_path):
     s._download_media('https://youtu.be/GVEPQ5vddv0', str(tmp_path), lambda *a: None)
     cmd = seen['cmd']
     assert cmd[cmd.index('--proxy') + 1] == 'http://u:p@proxy.example:8080'
-    assert cmd[cmd.index('--cookies') + 1] == str(tmp_path / 'cookies.txt')
+    assert cmd[cmd.index('--cookies') + 1] == str(tmp_path / 'cookies.txt')  # 1 proxy: cookies vão junto
     assert seen['mode'] == 0o600
 
 
@@ -591,3 +591,47 @@ def test_m4b_chapter_contract(monkeypatch):
     s._run_job_sync(job,state())
     assert job.format == 'm4b'
     assert s.audio_mime('m4b') == 'audio/mp4'
+
+
+def test_proxy_list_accepts_webshare_format(monkeypatch):
+    monkeypatch.setenv('YTDLP_PROXY', '84.247.60.125:6095:wimx:pa$s, http://a:b@h:1\n bad::entry:x:y ,64.137.10.153:5803:wimx:pw')
+    assert s.ytdlp_proxies() == ['http://wimx:pa%24s@84.247.60.125:6095', 'http://a:b@h:1',
+                                 'http://wimx:pw@64.137.10.153:5803']
+
+
+def test_rotates_proxies_without_cookies_and_remembers_good_one(monkeypatch, tmp_path):
+    monkeypatch.setattr(s, 'ALLOW_REMOTE_DOWNLOADS', False)
+    monkeypatch.setenv('YTDLP_PROXY', '1.1.1.1:80:u:p,2.2.2.2:80:u:p,3.3.3.3:80:u:p')
+    monkeypatch.setenv('YTDLP_COOKIES', COOKIE_LINE)
+    monkeypatch.setattr(s, '_last_good_proxy', {'value': None})
+    monkeypatch.setattr(s.shutil, 'which', lambda name: '/usr/bin/yt-dlp' if name == 'yt-dlp' else None)
+    good = 'http://u:p@3.3.3.3:80'
+    calls = []
+    def fake_run(cmd, **kw):
+        calls.append(cmd)
+        if cmd[cmd.index('--proxy') + 1] == good:
+            (tmp_path / 'media.webm').write_bytes(b'x')
+            return s.subprocess.CompletedProcess(cmd, 0, '', '')
+        return s.subprocess.CompletedProcess(cmd, 1, '', "ERROR: [youtube] x: Sign in to confirm you're not a bot")
+    monkeypatch.setattr(s.subprocess, 'run', fake_run)
+    s._download_media('https://youtu.be/x', str(tmp_path), lambda *a: None)
+    assert all('--cookies' not in c for c in calls)
+    assert s._last_good_proxy['value'] == good
+    calls.clear()
+    (tmp_path / 'media.webm').unlink()
+    s._download_media('https://youtu.be/x', str(tmp_path), lambda *a: None)
+    assert len(calls) == 1 and good in calls[0]
+
+
+def test_non_youtube_platforms_skip_proxy(monkeypatch, tmp_path):
+    monkeypatch.setattr(s, 'ALLOW_REMOTE_DOWNLOADS', False)
+    monkeypatch.setenv('YTDLP_PROXY', '1.1.1.1:80:u:p')
+    monkeypatch.setattr(s.shutil, 'which', lambda name: '/usr/bin/yt-dlp' if name == 'yt-dlp' else None)
+    seen = {}
+    def fake_run(cmd, **kw):
+        seen['cmd'] = cmd
+        (tmp_path / 'media.mp4').write_bytes(b'x')
+        return s.subprocess.CompletedProcess(cmd, 0, '', '')
+    monkeypatch.setattr(s.subprocess, 'run', fake_run)
+    s._download_media('https://vimeo.com/123', str(tmp_path), lambda *a: None)
+    assert '--proxy' not in seen['cmd']

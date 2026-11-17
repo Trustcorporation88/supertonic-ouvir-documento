@@ -29,6 +29,10 @@ Os cookies expiram com o tempo (geralmente semanas). Quando o site voltar a most
    - Valor: `http://usuario:senha@host:porta`
 4. Salve.
 
+Também dá para colocar **vários proxies** na mesma variável, separados por vírgula. O servidor gira entre eles e lembra qual funcionou por último. Aceita o formato da lista do Webshare/proxi.st (`host:porta:usuario:senha`), por exemplo:
+`84.247.60.125:6095:usuario:senha,64.137.10.153:5803:usuario:senha`
+Com vários proxies, os cookies não são enviados por eles (a mesma sessão trocando de IP faz o Google derrubar o login).
+
 O proxy é usado **só** para downloads de vídeo pelo yt-dlp. OpenAI, Supabase e o resto do site continuam saindo direto.
 
 ## Como conferir
