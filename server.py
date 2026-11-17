@@ -65,6 +65,14 @@ MODEL = os.environ.get("SUPERSONIC_MODEL", os.environ.get("SUPERTONIC_MODEL", "s
 QUEUE_MAX_SIZE = max(1, int(os.environ.get("QUEUE_MAX_SIZE", "16")))
 TRUSTED_PROXIES = os.environ.get("TRUSTED_PROXIES", "")
 ALLOW_REMOTE_DOWNLOADS = os.environ.get("ALLOW_REMOTE_DOWNLOADS", "0") == "1"
+# Links de plataformas de vídeo conhecidas (YouTube, Vimeo…) são liberados por padrão,
+# sempre via yt-dlp com o extrator genérico desligado: não serve para buscar URLs internas.
+ALLOW_VIDEO_PLATFORMS = os.environ.get("ALLOW_VIDEO_PLATFORMS", "1") == "1"
+VIDEO_PLATFORM_HOSTS = (
+    "youtube.com", "youtu.be", "youtube-nocookie.com", "vimeo.com", "dailymotion.com", "dai.ly",
+    "tiktok.com", "instagram.com", "facebook.com", "fb.watch", "x.com", "twitter.com",
+    "soundcloud.com", "twitch.tv", "rumble.com", "ted.com", "globoplay.globo.com", "g1.globo.com",
+)
 CACHE_REVISION = os.environ.get("CACHE_REVISION", "1")
 try:
     ENGINE_VERSION = version("supertonic")
@@ -339,12 +347,32 @@ def _transcribe(path: str, lang: Optional[str], progress) -> str:
         return clean_layout(_transcribe_local(src, lang, progress))
 
 
+def is_video_platform_url(url: str) -> bool:
+    try:
+        parsed = urllib.parse.urlparse((url or "").strip())
+        port = parsed.port
+    except ValueError:
+        return False
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+        return False
+    if port not in (None, 80, 443):
+        return False
+    host = (parsed.hostname or "").lower().rstrip(".")
+    return any(host == h or host.endswith("." + h) for h in VIDEO_PLATFORM_HOSTS)
+
+
+def remote_url_allowed(url: str) -> bool:
+    return ALLOW_REMOTE_DOWNLOADS or (ALLOW_VIDEO_PLATFORMS and is_video_platform_url(url))
+
+
 def _download_media(url: str, workdir: str, progress) -> str:
-    if not ALLOW_REMOTE_DOWNLOADS:
-        raise UsarError("Downloads remotos desabilitados. Envie o arquivo.", 403, "remote_download_disabled")
+    if not remote_url_allowed(url):
+        raise UsarError("Esse link não é de uma plataforma de vídeo suportada (YouTube, Vimeo, TikTok…). "
+                        "Baixe o arquivo e envie na aba Arquivo.", 403, "remote_download_disabled")
     parsed = urllib.parse.urlparse(url)
     if parsed.scheme not in {"http", "https"}:
         raise UsarError("Link inválido. Use http(s).", 400, "bad_url")
+    platform_only = not ALLOW_REMOTE_DOWNLOADS
     progress("download", 5, "Baixando o vídeo…")
     ytdlp = shutil.which("yt-dlp")
     if ytdlp:
@@ -353,19 +381,35 @@ def _download_media(url: str, workdir: str, progress) -> str:
         cmd = ["python", "-m", "yt_dlp"]
     else:
         cmd = None
+    if cmd is None and platform_only:
+        raise UsarError("O servidor ainda não tem o yt-dlp instalado. Baixe o vídeo e envie na aba Arquivo.",
+                        503, "ytdlp_missing")
     out_tpl = os.path.join(workdir, "media.%(ext)s")
     if cmd:
         cmd += ["-f", "bestaudio/best", "--no-playlist", "--quiet", "--no-warnings",
-                "--max-filesize", f"{MAX_UPLOAD_MB * 4}m", "-o", out_tpl, url]
+                "--max-filesize", f"{MAX_UPLOAD_MB * 4}m", "-o", out_tpl]
+        if platform_only:
+            cmd += ["--use-extractors", "default,-generic"]
+        cookies = (os.environ.get("YTDLP_COOKIES") or "").strip()
+        if cookies:
+            cookie_file = os.path.join(workdir, "cookies.txt")
+            with open(cookie_file, "w", encoding="utf-8") as fh:
+                fh.write(cookies.replace("\\n", "\n") + "\n")
+            cmd += ["--cookies", cookie_file]
+        cmd.append(url)
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=900)
         if proc.returncode != 0:
-            last = ((proc.stderr or "").strip().splitlines() or ["falha desconhecida"])[-1]
+            err = (proc.stderr or "").strip()
+            last = (err.splitlines() or ["falha desconhecida"])[-1]
+            if "Sign in to confirm" in err or "not a bot" in err:
+                raise UsarError("O YouTube bloqueou o download a partir do servidor (pediu login anti-robô). "
+                                "Baixe o vídeo e envie na aba Arquivo.", 502, "youtube_blocked")
             raise UsarError("Não consegui baixar o vídeo (" + last[:160] + "). Baixe o arquivo e envie na aba Arquivo.",
                             502, "download_failed")
     else:
-        import urllib.request
+        from urllib.request import urlopen
 
-        with urllib.request.urlopen(url, timeout=120) as r, open(os.path.join(workdir, "media.bin"), "wb") as f:
+        with urlopen(url, timeout=120) as r, open(os.path.join(workdir, "media.bin"), "wb") as f:
             shutil.copyfileobj(r, f, length=1 << 20)
     files = [p for p in Path(workdir).iterdir() if p.name.startswith("media.")]
     if not files:
@@ -865,7 +909,7 @@ def build_app() -> FastAPI:
             "ocr": _has("pytesseract") and shutil.which("tesseract") is not None,
             "video": bool(FFMPEG) and (bool(OPENAI_KEY) or _has("faster_whisper")),
             "transcriber": "openai" if OPENAI_KEY else ("local" if _has("faster_whisper") else None),
-            "remote_downloads": ALLOW_REMOTE_DOWNLOADS, "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(), "rate_limit_per_hour": RATE_LIMIT_PER_HOUR,
+            "remote_downloads": ALLOW_REMOTE_DOWNLOADS, "video_links": ALLOW_VIDEO_PLATFORMS and bool(shutil.which("yt-dlp") or _has("yt_dlp")), "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(), "rate_limit_per_hour": RATE_LIMIT_PER_HOUR,
             "share_ttl_hours": SHARE_TTL_SECONDS // 3600, "cache": sum(1 for d in CACHE_DIR.iterdir() if d.is_dir()),
         }
 
@@ -877,8 +921,9 @@ def build_app() -> FastAPI:
 
     async def _read_inputs(text, url, file):
         if url and url.strip():
-            if not ALLOW_REMOTE_DOWNLOADS:
-                raise UsarError("Downloads remotos desabilitados. Envie o arquivo.", 403, "remote_download_disabled")
+            if not remote_url_allowed(url.strip()):
+                raise UsarError("Esse link não é de uma plataforma de vídeo suportada (YouTube, Vimeo, TikTok…). "
+                                "Baixe o arquivo e envie na aba Arquivo.", 403, "remote_download_disabled")
             return {"url": url.strip()}
         if file is not None and file.filename:
             try:

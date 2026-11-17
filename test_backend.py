@@ -382,3 +382,35 @@ def test_invalid_epub_returns_client_error(tmp_path):
     with pytest.raises(s.UsarError) as error:
         s._extract_from_upload('bad.epub', path, 'pt', lambda *a: None)
     assert error.value.status == 422
+
+
+@pytest.mark.parametrize('url,ok', [
+    ('https://www.youtube.com/watch?v=GVEPQ5vddv0', True),
+    ('https://youtu.be/GVEPQ5vddv0', True),
+    ('https://m.youtube.com/watch?v=x', True),
+    ('https://vimeo.com/123', True),
+    ('http://127.0.0.1/private', False),
+    ('http://localhost/secret', False),
+    ('https://youtube.com.evil.com/x', False),
+    ('https://evil.com/?u=youtube.com', False),
+    ('https://user:pw@youtube.com/x', False),
+    ('https://youtube.com:8080/x', False),
+    ('file:///etc/passwd', False),
+])
+def test_video_platform_allowlist(url, ok):
+    assert s.is_video_platform_url(url) is ok
+
+
+def test_youtube_link_uses_ytdlp_without_generic_extractor(monkeypatch, tmp_path):
+    monkeypatch.setattr(s, 'ALLOW_REMOTE_DOWNLOADS', False)
+    monkeypatch.setattr(s, 'ALLOW_VIDEO_PLATFORMS', True)
+    monkeypatch.setattr(s.shutil, 'which', lambda name: '/usr/bin/yt-dlp' if name == 'yt-dlp' else None)
+    seen = {}
+    def fake_run(cmd, **kw):
+        seen['cmd'] = cmd
+        (tmp_path / 'media.m4a').write_bytes(b'x')
+        return s.subprocess.CompletedProcess(cmd, 0, '', '')
+    monkeypatch.setattr(s.subprocess, 'run', fake_run)
+    out = s._download_media('https://www.youtube.com/watch?v=GVEPQ5vddv0', str(tmp_path), lambda *a: None)
+    assert out.endswith('media.m4a')
+    assert '--use-extractors' in seen['cmd'] and 'default,-generic' in seen['cmd']
