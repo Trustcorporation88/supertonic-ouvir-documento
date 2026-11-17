@@ -2,6 +2,7 @@
 # Aumenta bastante a imagem (~1 GB). Instale com:  pip install -r requirements-transcribe.txt
 # Requer no sistema: ffmpeg, tesseract-ocr (+ tesseract-ocr-por)
 faster-whisper>=1.0
-yt-dlp>=2024.8.6
+# PyAV 19 removeu o argumento metadata_errors que o faster-whisper usa
+av>=11,<19
 pytesseract>=0.3.10
 pillow>=10.0
