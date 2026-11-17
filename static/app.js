@@ -97,6 +97,12 @@
       const j = await readResponse("/api/voices", "json");
       const names = [...(j.voices || []), ...(j.custom || [])];
       if (names.length) renderVoices(names);
+      if (Array.isArray(j.formats)) {
+        [...formatEl.options].forEach((option) => { option.disabled = !j.formats.includes(option.value); });
+        if (!j.formats.includes(formatEl.value)) {
+          formatEl.value = [...formatEl.options].find((option) => !option.disabled)?.value || "";
+        }
+      }
       if (j.max_upload_mb) { MAX_MB = j.max_upload_mb; $("max-mb").textContent = MAX_MB; }
       if (j.default_lang && !localStorage.getItem("supertonic.lang") && [...langEl.options].some((o) => o.value === j.default_lang)) langEl.value = j.default_lang;
     } catch { /* mantém padrões */ }
@@ -264,7 +270,9 @@
       s.textContent = c;
       s.title = "Clique para ouvir este trecho";
       s.onclick = () => {
-        if (player.src && player.duration && isFinite(player.duration)) {
+        if (play.active) {
+          if (i < play.urls.length) playChunk(i);
+        } else if (player.src && player.duration && isFinite(player.duration)) {
           const ratio = play.chunkRatios[i]?.start || 0;
           player.currentTime = ratio * player.duration;
           highlight(i);
@@ -290,7 +298,7 @@
   }
 
   player.addEventListener("timeupdate", () => {
-    if (!karaokeEnabled || !player.duration || !isFinite(player.duration) || !play.chunkRatios.length) return;
+    if (play.active || !karaokeEnabled || !player.duration || !isFinite(player.duration) || !play.chunkRatios.length) return;
     const progressRatio = player.currentTime / player.duration;
     const idx = play.chunkRatios.findIndex((r) => progressRatio >= r.start && progressRatio <= r.end);
     if (idx !== -1 && idx !== play.index) {
@@ -310,7 +318,11 @@
     if (!play.active) return;
     const next = play.index + 1;
     if (next < play.urls.length) playChunk(next);
-    else if (play.total != null && next >= play.total) { play.active = false; highlight(-1); }
+    else if (play.total != null && next >= play.total) {
+      play.active = false; play.waiting = false; highlight(-1);
+      // Replay must use the complete file, not just the last streamed chunk.
+      if (play.finalUrl) player.src = play.finalUrl;
+    }
     else { play.waiting = true; say("Aguardando o próximo trecho…"); }
   });
 
@@ -345,6 +357,22 @@
   function setDownload(url, filename) {
     if (url) { down.href = url; down.download = filename; down.textContent = "Baixar " + filename.split(".").pop().toUpperCase(); down.removeAttribute("aria-disabled"); }
     else { down.removeAttribute("href"); down.textContent = "Preparando arquivo…"; down.setAttribute("aria-disabled", "true"); }
+  }
+
+  function playSavedAudio({ url, filename, text = "", chunks = [], jobId = null }) {
+    if (currentRun) { say("Aguarde a conversão terminar antes de abrir outro áudio."); return false; }
+    player.pause();
+    play.active = false; play.waiting = false; play.urls = []; play.total = null; play.index = -1;
+    if (play.finalUrl) { URL.revokeObjectURL(play.finalUrl); play.finalUrl = null; }
+    lastText = text;
+    renderChunks(chunks);
+    player.src = url;
+    setDownload(url, filename); setShare(jobId);
+    truncatedEl.hidden = true; result.hidden = false; preview.hidden = !text;
+    toggleText.textContent = text ? "Ocultar texto" : "Ver texto";
+    toggleText.setAttribute("aria-expanded", String(Boolean(text)));
+    player.play().catch(() => say("Não foi possível tocar este formato no navegador. Use Baixar para abrir em um player compatível.", "err"));
+    return true;
   }
 
   // ---------------------------------------------------------------- Histórico (IndexedDB)
@@ -389,11 +417,8 @@
       li.querySelector(".sub").textContent = `${VOICE_LABELS[h.voice] || h.voice} · ${fmtDur(h.duration)} · ${fmtBytes(h.blob.size)} · ${d.toLocaleDateString("pt-BR")} ${d.toLocaleTimeString("pt-BR", { hour: "2-digit", minute: "2-digit" })}`;
       li.querySelector(".dl").href = urlFor(h);
       li.querySelector(".play").onclick = () => {
-        play.active = false; play.urls = []; play.total = null;
-        renderChunks(h.chunks || [h.text]); play.spans.forEach((s) => s.classList.add("ready"));
-        lastText = h.text; player.src = urlFor(h); setDownload(urlFor(h), h.filename); setShare(h.id && h.when > Date.now() - 3 * 3600e3 ? h.id : null);
-        result.hidden = false; preview.hidden = false; toggleText.textContent = "Ocultar texto";
-        player.play().catch(() => {});
+        if (!playSavedAudio({ url: urlFor(h), filename: h.filename, text: h.text,
+          chunks: h.chunks || [h.text], jobId: h.id && h.when > Date.now() - 3 * 3600e3 ? h.id : null })) return;
         result.scrollIntoView({ behavior: "smooth", block: "nearest" });
       };
       historyEl.appendChild(li);
@@ -701,7 +726,7 @@
     if (!libraryList) return;
     libraryList.innerHTML = '<p class="hint">Carregando documentos da nuvem…</p>';
     try {
-      const r = await fetch("/api/documents");
+      const r = await api("/api/documents");
       const data = await r.json();
       if (!data.enabled) {
         libraryList.innerHTML = '<div class="library-empty">Supabase não configurado. Adicione as variáveis SUPABASE_URL e SUPABASE_SERVICE_ROLE_KEY no Railway para ativar a nuvem.</div>';
@@ -730,9 +755,9 @@
           <div class="doc-card-bottom">
             <span class="doc-card-meta">${dateStr}</span>
             <div class="doc-card-actions">
-              <button type="button" class="btn-sm play-doc" data-url="${doc.audio_url}">▶ Ouvir</button>
-              <a class="btn-sm" href="${doc.audio_url}" target="_blank" download="trustvoice-${doc.job_uuid}.${doc.format}">⬇ Baixar</a>
-              <button type="button" class="btn-sm del del-doc" data-uuid="${doc.job_uuid}">Excluir</button>
+              <button type="button" class="btn-sm play-doc" data-url="${escapeHtml(doc.audio_url)}" data-filename="${escapeHtml(`trustvoice-${doc.job_uuid}.${doc.format}`)}">▶ Ouvir</button>
+              <a class="btn-sm" href="${escapeHtml(doc.audio_url)}" target="_blank" rel="noopener" download="${escapeHtml(`trustvoice-${doc.job_uuid}.${doc.format}`)}">⬇ Baixar</a>
+              <button type="button" class="btn-sm del del-doc" data-uuid="${escapeHtml(doc.job_uuid)}">Excluir</button>
             </div>
           </div>
         `;
@@ -741,10 +766,9 @@
 
       libraryList.querySelectorAll(".play-doc").forEach((btn) => {
         btn.onclick = () => {
-          libraryModal.hidden = true;
-          player.src = btn.dataset.url;
-          result.hidden = false;
-          player.play().catch(() => {});
+          if (playSavedAudio({ url: btn.dataset.url, filename: btn.dataset.filename })) {
+            libraryModal.hidden = true;
+          }
         };
       });
 
@@ -754,10 +778,12 @@
           btn.disabled = true;
           btn.textContent = "…";
           try {
-            await fetch(`/api/documents/${btn.dataset.uuid}`, { method: "DELETE" });
+            const response = await api(`/api/documents/${encodeURIComponent(btn.dataset.uuid)}`, { method: "DELETE" });
+            if ((await response.json()).success === false) throw new Error("O servidor não confirmou a exclusão.");
             loadLibrary();
           } catch (e) {
             alert("Erro ao excluir: " + e.message);
+            btn.disabled = false; btn.textContent = "Excluir";
           }
         };
       });
@@ -781,7 +807,7 @@
 
   async function refreshLibraryCount() {
     try {
-      const r = await fetch("/api/documents");
+      const r = await api("/api/documents");
       const data = await r.json();
       if (data.enabled && libraryCount) {
         const count = data.documents?.length || 0;

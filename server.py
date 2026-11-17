@@ -73,7 +73,7 @@ VIDEO_PLATFORM_HOSTS = (
     "tiktok.com", "instagram.com", "facebook.com", "fb.watch", "x.com", "twitter.com",
     "soundcloud.com", "twitch.tv", "rumble.com", "ted.com", "globoplay.globo.com", "g1.globo.com",
 )
-CACHE_REVISION = os.environ.get("CACHE_REVISION", "1")
+CACHE_REVISION = os.environ.get("CACHE_REVISION", "2")
 try:
     ENGINE_VERSION = version("supertonic")
 except PackageNotFoundError:
@@ -99,8 +99,9 @@ OPENAI_KEY = (os.environ.get("OPENAI_API_KEY") or os.environ.get("openai_key") o
 OPENAI_TRANSCRIBE_MODEL = os.environ.get("OPENAI_TRANSCRIBE_MODEL", "gpt-4o-mini-transcribe")
 OPENAI_MAX_UPLOAD = 24 * 1024 * 1024  # limite da API é 25 MB
 
-PUBLIC_EXACT = {"/", "/usar", "/api/voices", "/manifest.webmanifest", "/sw.js", "/favicon.svg", "/favicon.ico", "/api/feed.xml", "/feed.xml"}
-PUBLIC_PREFIXES = ("/health", "/docs", "/redoc", "/openapi.json", "/static", "/api/jobs", "/s", "/api/documents")
+# Private single-owner instance: only assets, readiness and deliberate shares are public.
+PUBLIC_EXACT = {"/health", "/manifest.webmanifest", "/sw.js", "/favicon.svg", "/favicon.ico"}
+PUBLIC_PREFIXES = ("/static", "/s")
 
 TEXT_EXT = {".txt", ".md", ".markdown", ".csv", ".json", ".html", ".htm", ".srt", ".vtt"}
 PDF_EXT = {".pdf"}
@@ -144,6 +145,14 @@ def _err(status: int, message: str, code: str, type_: str = "invalid_request_err
     return JSONResponse(status_code=status, content={"error": {"message": message, "type": type_, "code": code}})
 
 
+def audio_mime(fmt: str) -> str:
+    if fmt == "m4b":
+        return "audio/mp4"
+    if fmt == "mp3":
+        return "audio/mpeg"
+    return format_to_mime(fmt)
+
+
 class ApiKeyMiddleware(BaseHTTPMiddleware):
     def __init__(self, app, api_key: str):
         super().__init__(app)
@@ -153,14 +162,36 @@ class ApiKeyMiddleware(BaseHTTPMiddleware):
         path = request.url.path.rstrip("/") or "/"
         if path in PUBLIC_EXACT or any(path == p or path.startswith(p + "/") for p in PUBLIC_PREFIXES):
             return await call_next(request)
+        if not self.api_key:
+            return _err(503, "Defina API_KEY no servidor para habilitar esta instância privada.",
+                        "auth_not_configured", "authentication_error")
         provided = request.headers.get("x-api-key") or ""
         auth = request.headers.get("authorization") or ""
         if auth.lower().startswith("bearer "):
             provided = auth[7:].strip()
-        if not provided or not secrets.compare_digest(provided, self.api_key):
-            return _err(401, "Chave inválida. Envie o cabeçalho X-API-Key ou Authorization: Bearer <chave>.",
-                        "invalid_api_key", "authentication_error")
-        return await call_next(request)
+        elif auth.lower().startswith("basic "):
+            import base64
+            import binascii
+            try:
+                decoded = base64.b64decode(auth[6:].strip(), validate=True).decode("utf-8")
+                provided = decoded.split(":", 1)[1] if ":" in decoded else ""
+            except (ValueError, UnicodeDecodeError, binascii.Error):
+                provided = ""
+        if not provided or not secrets.compare_digest(provided.encode(), self.api_key.encode()):
+            response = _err(401, "Acesso privado. Entre com a senha da instância (API_KEY).",
+                            "invalid_api_key", "authentication_error")
+            response.headers["WWW-Authenticate"] = 'Basic realm="TrustVoice", charset="UTF-8"'
+            response.headers["Cache-Control"] = "no-store"
+            return response
+        if request.method not in {"GET", "HEAD", "OPTIONS"}:
+            origin = request.headers.get("origin")
+            if request.headers.get("sec-fetch-site") == "cross-site" or (
+                origin and urllib.parse.urlsplit(origin).netloc != request.url.netloc
+            ):
+                return _err(403, "Origem da requisição não permitida.", "invalid_origin")
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "private, no-store"
+        return response
 
 
 # ---------------------------------------------------------------------------
@@ -581,7 +612,7 @@ def _extract_from_upload(filename: str, data: Path, lang: Optional[str], progres
 # ---------------------------------------------------------------------------
 class Job:
     def __init__(self, **kw):
-        self.id = uuid.uuid4().hex[:12]
+        self.id = uuid.uuid4().hex
         self.created = time.time()
         self.status = "queued"          # queued | running | done | error
         self.stage = "queued"           # queued | download | read | transcribe | tts | encode | done
@@ -769,6 +800,7 @@ def _run_job_sync(job: Job, state) -> None:
     total = len(job.chunks)
     wav_path = job.dir / "full.wav"
     is_podcast = getattr(job, "mode", "").startswith("podcast")
+    chapter_ranges = []
     with sf.SoundFile(str(wav_path), mode="w", samplerate=sr, channels=1, subtype="PCM_16") as full:
         if is_podcast:
             jingle_intro = ai_features.generate_podcast_jingle(sr, is_intro=True)
@@ -790,11 +822,13 @@ def _run_job_sync(job: Job, state) -> None:
             gap = (job.pause if chunk.endswith("\n\n") else CHUNK_GAP_SECONDS) if i < total - 1 else 0
             tmp = job.dir / f"chunk{i}.part"
             with sf.SoundFile(str(tmp), mode="w", samplerate=sr, channels=1, format="WAV", subtype="PCM_16") as block:
+                start_frame = full.tell()
                 block.write(wav)
                 full.write(wav)
                 silence = np.zeros(int(sr * gap), dtype=np.float32)
                 block.write(silence)
                 full.write(silence)
+                chapter_ranges.append((round(start_frame * 1000 / sr), round(full.tell() * 1000 / sr)))
             tmp.replace(job.dir / f"chunk{i}.wav")
             job.duration += dur + gap
             job.chunks_ready = i + 1
@@ -825,14 +859,11 @@ def _run_job_sync(job: Job, state) -> None:
             if isinstance(inp, dict) and inp.get("file"):
                 title = str(inp["file"][0]).rsplit(".", 1)[0]
             chapters = []
-            if len(job.chunks) > 1:
-                cur = 0.0
-                step = max(0.5, job.duration / len(job.chunks))
-                for idx, c in enumerate(job.chunks):
-                    c_title = c.strip().split("\n")[0][:40] or f"Capítulo {idx + 1}"
-                    chapters.append(AudioChapter(title=c_title, start=cur, end=min(job.duration, cur + step)))
-                    cur += step
-            export_m4b(wav_path, out, chapters=chapters if chapters else None, title=title or "SuperTonic Audiolivro", author="SuperTonic")
+            for idx, (c, (start_ms, end_ms)) in enumerate(zip(job.chunks, chapter_ranges)):
+                if end_ms > start_ms:
+                    c_title = c.strip().split("\n")[0][:40] or f"Trecho {idx + 1}"
+                    chapters.append(AudioChapter(title=c_title, start_ms=start_ms, end_ms=end_ms))
+            export_m4b(wav_path, out, chapters=chapters, title=title or "SuperTonic Audiolivro", author="SuperTonic", ffmpeg=FFMPEG)
         except Cancelled:
             raise
         except Exception as e:
@@ -878,7 +909,8 @@ async def _worker(state):
             try:
                 await asyncio.shield(task)
                 if job.status == "done" and job.final:
-                    asyncio.create_task(supabase_persistence.persist_completed_job(job))
+                    # Finish persistence before upload metadata is cleared or files expire.
+                    await supabase_persistence.persist_completed_job(job)
             except asyncio.CancelledError:
                 # to_thread cancellation does not stop its thread. Wait for cooperation
                 # before unlinking uploads or letting the upstream model shut down.
@@ -1043,7 +1075,7 @@ def build_app() -> FastAPI:
             "ocr": _has("pytesseract") and shutil.which("tesseract") is not None,
             "video": bool(FFMPEG) and (bool(OPENAI_KEY) or _has("faster_whisper")),
             "transcriber": "openai" if OPENAI_KEY else ("local" if _has("faster_whisper") else None), "llm": __import__("ai_features").llm_provider(),
-            "remote_downloads": ALLOW_REMOTE_DOWNLOADS, "video_links": ALLOW_VIDEO_PLATFORMS and bool(shutil.which("yt-dlp") or _has("yt_dlp")), "ytdlp_cookies": bool(ytdlp_cookies_text()), "ytdlp_cookie_info": ytdlp_cookie_summary(), "ytdlp_proxy": bool(ytdlp_proxy()), "js_runtime": bool(shutil.which("deno")), "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(), "rate_limit_per_hour": RATE_LIMIT_PER_HOUR,
+            "remote_downloads": ALLOW_REMOTE_DOWNLOADS, "video_links": ALLOW_VIDEO_PLATFORMS and bool(shutil.which("yt-dlp") or _has("yt_dlp")), "ytdlp_cookies": bool(ytdlp_cookies_text()), "ytdlp_proxy": bool(ytdlp_proxy()), "js_runtime": bool(shutil.which("deno")), "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(), "rate_limit_per_hour": RATE_LIMIT_PER_HOUR,
             "share_ttl_hours": SHARE_TTL_SECONDS // 3600, "cache": sum(1 for d in CACHE_DIR.iterdir() if d.is_dir()),
         }
 
@@ -1120,7 +1152,7 @@ def build_app() -> FastAPI:
         job = JOBS.get(job_id)
         if not job:
             if supabase_persistence.is_enabled():
-                meta = supabase_persistence.get_job_meta(job_id)
+                meta = await asyncio.to_thread(supabase_persistence.get_job_meta, job_id)
                 if meta:
                     return meta
             return _err(404, "Job não encontrado (expirou?).", "not_found")
@@ -1137,12 +1169,12 @@ def build_app() -> FastAPI:
     async def get_audio(job_id: str):
         job = JOBS.get(job_id)
         if job and job.status == "done" and job.final and Path(job.final).exists():
-            mime = "audio/mpeg" if job.format == "mp3" else format_to_mime(job.format)
+            mime = audio_mime(job.format)
             return FileResponse(job.final, media_type=mime, filename=f"trustvoice-{job.id}.{job.format}",
                                 headers={"Cache-Control": "private, max-age=86400"})
         if supabase_persistence.is_enabled():
             fmt = job.format if job else "mp3"
-            signed_url = supabase_persistence.get_audio_signed_url(job_id, fmt)
+            signed_url = await asyncio.to_thread(supabase_persistence.get_audio_signed_url, job_id, fmt)
             if signed_url:
                 from starlette.responses import RedirectResponse
                 return RedirectResponse(signed_url, status_code=307)
@@ -1185,16 +1217,16 @@ def build_app() -> FastAPI:
         if not m:
             return Response("<h1>Link expirado ou inválido.</h1><p><a href='/'>Voltar ao TrustVoice</a></p>",
                             status_code=404, media_type="text/html")
-        return Response(_share_page(m, token), media_type="text/html")
+        return Response(_share_page(m, token), media_type="text/html", headers={"Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer"})
 
     @app.get("/s/{token}/audio", include_in_schema=False)
     async def share_audio(token: str):
         m = _share_meta(token)
         if not m:
             return _err(404, "Link expirado ou inválido.", "not_found")
-        mime = "audio/mpeg" if m["format"] == "mp3" else format_to_mime(m["format"])
+        mime = audio_mime(m["format"])
         return FileResponse(SHARE_DIR / token / f"audio.{m['format']}", media_type=mime,
-                            headers={"Cache-Control": "public, max-age=3600"})
+                            headers={"Cache-Control": "private, no-store", "Referrer-Policy": "no-referrer"})
 
     @app.delete("/api/jobs/{job_id}", include_in_schema=False)
     async def delete_job(job_id: str):
@@ -1235,7 +1267,7 @@ def build_app() -> FastAPI:
             return _err(422, error["message"], error["code"])
         if getattr(job, "transcribe_only", False):
             return JSONResponse({"text": job.text, "truncated": job.truncated})
-        return FileResponse(job.final, media_type=format_to_mime(job.format), headers={
+        return FileResponse(job.final, media_type=audio_mime(job.format), headers={
             "X-Texto": urllib.parse.quote(job.text[:8000]), "X-Duration-Seconds": f"{job.duration:.2f}",
             "X-Truncated": "1" if job.truncated else "0", "Cache-Control": "no-store"})
 
@@ -1289,10 +1321,9 @@ def build_app() -> FastAPI:
     app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
     api_key = (os.environ.get("API_KEY") or "").strip()
-    if api_key:
-        app.add_middleware(ApiKeyMiddleware, api_key=api_key)
-    else:
-        logger.warning("API_KEY não definida — /v1/* está aberto.")
+    app.add_middleware(ApiKeyMiddleware, api_key=api_key)
+    if not api_key:
+        logger.error("API_KEY não definida — rotas privadas bloqueadas até configurar autenticação.")
     app.add_middleware(BodyLimitMiddleware, max_bytes=MAX_UPLOAD_MB * 1024 * 1024 + 1024 * 1024)
     return app
 
