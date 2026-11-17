@@ -84,3 +84,52 @@ def test_podcast_acoustic_jingles():
     assert len(outro) > 0
     assert max(abs(intro)) <= 1.0
     assert max(abs(outro)) <= 1.0
+
+
+class _Resp:
+    def __init__(self, payload):
+        self.payload = payload
+    def read(self):
+        import json
+        return json.dumps(self.payload).encode()
+    def __enter__(self):
+        return self
+    def __exit__(self, *a):
+        return False
+
+
+def test_anthropic_used_first_and_picks_newest_sonnet(monkeypatch):
+    import json
+    import ai_features
+    ai_features._anthropic_model_cache.clear()
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-ant-test')
+    monkeypatch.setenv('OPENAI_API_KEY', 'sk-openai-bad')
+    monkeypatch.delenv('ANTHROPIC_MODEL', raising=False)
+    calls = []
+    def fake_urlopen(req, timeout=0):
+        calls.append(req.full_url)
+        assert req.get_header('X-api-key') == 'sk-ant-test'
+        if req.full_url.startswith('https://api.anthropic.com/v1/models'):
+            return _Resp({'data': [{'id': 'claude-haiku-9'}, {'id': 'claude-sonnet-9'}, {'id': 'claude-sonnet-8'}]})
+        body = json.loads(req.data)
+        assert body['model'] == 'claude-sonnet-9' and body['system'] == 'SYS'
+        return _Resp({'content': [{'type': 'text', 'text': 'Olá do Claude'}]})
+    monkeypatch.setattr(ai_features.urllib.request, 'urlopen', fake_urlopen)
+    assert ai_features._call_llm('oi', 'SYS', 100) == 'Olá do Claude'
+    assert ai_features.llm_provider() == 'anthropic'
+    assert all('openai.com' not in c for c in calls)
+
+
+def test_anthropic_failure_falls_back_to_offline(monkeypatch):
+    import ai_features
+    ai_features._anthropic_model_cache.clear()
+    monkeypatch.setenv('ANTHROPIC_API_KEY', 'sk-ant-bad')
+    monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+    monkeypatch.delenv('OPENAI_KEY', raising=False)
+    monkeypatch.delenv('GROQ_API_KEY', raising=False)
+    def boom(req, timeout=0):
+        raise OSError('network down')
+    monkeypatch.setattr(ai_features.urllib.request, 'urlopen', boom)
+    assert ai_features._call_llm('oi', 'SYS') is None
+    script = ai_features.generate_podcast_script('Texto curto. Outra frase importante aqui.')
+    assert '[Mulher 1]:' in script

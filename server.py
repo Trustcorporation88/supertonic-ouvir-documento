@@ -1042,7 +1042,7 @@ def build_app() -> FastAPI:
             "document": _has("pypdf") and _has("docx"),
             "ocr": _has("pytesseract") and shutil.which("tesseract") is not None,
             "video": bool(FFMPEG) and (bool(OPENAI_KEY) or _has("faster_whisper")),
-            "transcriber": "openai" if OPENAI_KEY else ("local" if _has("faster_whisper") else None),
+            "transcriber": "openai" if OPENAI_KEY else ("local" if _has("faster_whisper") else None), "llm": __import__("ai_features").llm_provider(),
             "remote_downloads": ALLOW_REMOTE_DOWNLOADS, "video_links": ALLOW_VIDEO_PLATFORMS and bool(shutil.which("yt-dlp") or _has("yt_dlp")), "ytdlp_cookies": bool(ytdlp_cookies_text()), "ytdlp_cookie_info": ytdlp_cookie_summary(), "ytdlp_proxy": bool(ytdlp_proxy()), "js_runtime": bool(shutil.which("deno")), "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(), "rate_limit_per_hour": RATE_LIMIT_PER_HOUR,
             "share_ttl_hours": SHARE_TTL_SECONDS // 3600, "cache": sum(1 for d in CACHE_DIR.iterdir() if d.is_dir()),
         }

@@ -1,7 +1,7 @@
 """AI features for SuperTonic: Executive Summary, NotebookLM-style Podcast, and Translation.
 
 Works with:
-1) OpenAI API / Groq API (when OPENAI_API_KEY or GROQ_API_KEY is configured) for human-grade quality.
+1) Claude (ANTHROPIC_API_KEY), or OpenAI / Groq (OPENAI_API_KEY / GROQ_API_KEY), for human-grade quality.
 2) Zero-dependency offline NLP fallback (extractive summarization, smart dialog structuring, rule-based) so it always works out of the box even without any API key.
 """
 from __future__ import annotations
@@ -18,8 +18,16 @@ from typing import List, Tuple
 logger = logging.getLogger("supertonic.ai")
 
 
+ANTHROPIC_VERSION = "2023-06-01"
+_anthropic_model_cache: dict = {}
+
+
+def _anthropic_key() -> str:
+    return (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("CLAUDE_API_KEY") or "").strip()
+
+
 def _get_api_config() -> Tuple[str, str, str]:
-    """Returns (api_key, base_url, default_model)."""
+    """OpenAI/Groq (formato chat/completions). Returns (api_key, base_url, default_model)."""
     key = (
         os.environ.get("OPENAI_API_KEY")
         or os.environ.get("OPENAI_KEY")
@@ -33,31 +41,86 @@ def _get_api_config() -> Tuple[str, str, str]:
     return key, "https://api.openai.com/v1", os.environ.get("OPENAI_CHAT_MODEL", "gpt-4o-mini")
 
 
-def _call_llm(prompt: str, system_prompt: str, max_tokens: int = 2000) -> str | None:
+def llm_provider() -> str | None:
+    if _anthropic_key():
+        return "anthropic"
+    key, base, _ = _get_api_config()
+    if key:
+        return "groq" if "groq" in base else "openai"
+    return None
+
+
+def _http_json(url: str, headers: dict, payload: dict | None = None, timeout: int = 60) -> dict:
+    data = json.dumps(payload).encode("utf-8") if payload is not None else None
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST" if data else "GET")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            return json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", "replace")[:300]
+        body = re.sub(r"(sk-[A-Za-z0-9_\-]{4})[A-Za-z0-9_\-*]+", r"\1…", body)
+        raise RuntimeError(f"HTTP {exc.code}: {body}") from exc
+
+
+def _anthropic_model(key: str) -> str:
+    """ANTHROPIC_MODEL ou, se vazio, o Sonnet mais novo disponível para a chave (API /v1/models)."""
+    forced = (os.environ.get("ANTHROPIC_MODEL") or "").strip()
+    if forced:
+        return forced
+    if key in _anthropic_model_cache:
+        return _anthropic_model_cache[key]
+    data = _http_json("https://api.anthropic.com/v1/models?limit=100",
+                      {"x-api-key": key, "anthropic-version": ANTHROPIC_VERSION}, timeout=20)
+    ids = [m.get("id", "") for m in data.get("data", []) if m.get("id")]  # mais novos primeiro
+    if not ids:
+        raise RuntimeError("A chave da Anthropic não lista nenhum modelo")
+    model = (next((i for i in ids if "sonnet" in i), None)
+             or next((i for i in ids if "haiku" in i), None) or ids[0])
+    _anthropic_model_cache[key] = model
+    logger.info("Modelo Anthropic escolhido: %s", model)
+    return model
+
+
+def _call_anthropic(key: str, prompt: str, system_prompt: str, max_tokens: int) -> str:
+    model = _anthropic_model(key)
+    data = _http_json("https://api.anthropic.com/v1/messages", {
+        "x-api-key": key, "anthropic-version": ANTHROPIC_VERSION, "content-type": "application/json",
+    }, {
+        "model": model, "max_tokens": max_tokens, "system": system_prompt,
+        "messages": [{"role": "user", "content": prompt}],
+    }, timeout=90)
+    text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip()
+    if not text:
+        raise RuntimeError("Resposta vazia da Anthropic")
+    return text
+
+
+def _call_openai_compatible(prompt: str, system_prompt: str, max_tokens: int) -> str | None:
     api_key, base_url, model = _get_api_config()
     if not api_key:
         return None
-    url = f"{base_url}/chat/completions"
-    headers = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {api_key}",
-    }
-    payload = {
+    data = _http_json(f"{base_url}/chat/completions", {
+        "Content-Type": "application/json", "Authorization": f"Bearer {api_key}",
+    }, {
         "model": model,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": prompt},
-        ],
-        "temperature": 0.7,
-        "max_tokens": max_tokens,
-    }
+        "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
+        "temperature": 0.7, "max_tokens": max_tokens,
+    }, timeout=60)
+    return data["choices"][0]["message"]["content"].strip()
+
+
+def _call_llm(prompt: str, system_prompt: str, max_tokens: int = 2000) -> str | None:
+    """Claude (ANTHROPIC_API_KEY) primeiro; depois OpenAI/Groq; None = usa o modo offline."""
+    key = _anthropic_key()
+    if key:
+        try:
+            return _call_anthropic(key, prompt, system_prompt, max_tokens)
+        except Exception as exc:
+            logger.warning("Falha na Anthropic: %s", exc)
     try:
-        req = urllib.request.Request(url, data=json.dumps(payload).encode("utf-8"), headers=headers)
-        with urllib.request.urlopen(req, timeout=45) as resp:
-            data = json.loads(resp.read().decode("utf-8"))
-            return data["choices"][0]["message"]["content"].strip()
+        return _call_openai_compatible(prompt, system_prompt, max_tokens)
     except Exception as exc:
-        logger.warning("Falha na chamada ao LLM (%s): %s", model, exc)
+        logger.warning("Falha na chamada OpenAI/Groq: %s", exc)
         return None
 
 
