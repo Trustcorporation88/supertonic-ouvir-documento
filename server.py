@@ -411,6 +411,28 @@ def ytdlp_cookies_text() -> Optional[str]:
     return text.rstrip("\n") + "\n"
 
 
+def ytdlp_cookie_summary() -> Dict[str, Any]:
+    """Só nomes e contagens (nunca valores), para diagnosticar cookies no /health."""
+    text = ytdlp_cookies_text()
+    if not text:
+        return {"loaded": False}
+    now = time.time()
+    rows = [ln.split("\t") for ln in text.split("\n") if ln.strip() and not ln.startswith("#")]
+    rows = [r for r in rows if len(r) >= 7]
+    yt = [r for r in rows if r[0].lstrip(".").endswith(("youtube.com", "google.com"))]
+    names = {r[5] for r in yt}
+    def expired(r):
+        try:
+            exp = int(float(r[4]))
+        except ValueError:
+            return False
+        return 0 < exp < now
+    login_names = {"LOGIN_INFO", "SID", "__Secure-1PSID", "__Secure-3PSID", "SAPISID", "__Secure-3PAPISID"}
+    return {"loaded": True, "count": len(rows), "youtube_or_google": len(yt),
+            "expired": sum(1 for r in yt if expired(r)),
+            "login_cookies": sorted(names & login_names)}
+
+
 def _ytdlp_runtime_args(workdir: str) -> List[str]:
     args: List[str] = []
     proxy = ytdlp_proxy()
@@ -1004,7 +1026,7 @@ def build_app() -> FastAPI:
             "ocr": _has("pytesseract") and shutil.which("tesseract") is not None,
             "video": bool(FFMPEG) and (bool(OPENAI_KEY) or _has("faster_whisper")),
             "transcriber": "openai" if OPENAI_KEY else ("local" if _has("faster_whisper") else None),
-            "remote_downloads": ALLOW_REMOTE_DOWNLOADS, "video_links": ALLOW_VIDEO_PLATFORMS and bool(shutil.which("yt-dlp") or _has("yt_dlp")), "ytdlp_cookies": bool(ytdlp_cookies_text()), "ytdlp_proxy": bool(ytdlp_proxy()), "js_runtime": bool(shutil.which("deno")), "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(), "rate_limit_per_hour": RATE_LIMIT_PER_HOUR,
+            "remote_downloads": ALLOW_REMOTE_DOWNLOADS, "video_links": ALLOW_VIDEO_PLATFORMS and bool(shutil.which("yt-dlp") or _has("yt_dlp")), "ytdlp_cookies": bool(ytdlp_cookies_text()), "ytdlp_cookie_info": ytdlp_cookie_summary(), "ytdlp_proxy": bool(ytdlp_proxy()), "js_runtime": bool(shutil.which("deno")), "mp3": "mp3" in OUTPUT_FORMATS, "queue": QUEUE.qsize(), "rate_limit_per_hour": RATE_LIMIT_PER_HOUR,
             "share_ttl_hours": SHARE_TTL_SECONDS // 3600, "cache": sum(1 for d in CACHE_DIR.iterdir() if d.is_dir()),
         }
 

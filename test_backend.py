@@ -503,3 +503,11 @@ def test_youtube_all_clients_blocked_reports_redacted_detail(monkeypatch, tmp_pa
         s._download_media('https://youtu.be/x', str(tmp_path), lambda *a: None)
     assert e.value.code == 'youtube_blocked' and '5 métodos' in e.value.message
     assert 'secret' not in e.value.message and '403' in e.value.message
+
+
+def test_cookie_summary_never_exposes_values(monkeypatch):
+    monkeypatch.delenv('YTDLP_COOKIES_B64', raising=False)
+    monkeypatch.setenv('YTDLP_COOKIES', COOKIE_LINE + '\n.youtube.com\tTRUE\t/\tTRUE\t1000\tOLD\tzzz')
+    info = s.ytdlp_cookie_summary()
+    assert info['loaded'] and info['count'] == 2 and info['expired'] == 1 and info['login_cookies'] == ['SID']
+    assert 'abc123' not in str(info) and 'zzz' not in str(info)
