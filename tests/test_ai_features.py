@@ -40,11 +40,11 @@ def test_generate_and_parse_podcast_script():
     assert "M1" in voices
 
 
-def test_translate_to_portuguese_fallback_offline():
-    txt = "Hello world, this is a document."
-    res = ai_features.translate_to_portuguese(txt)
-    assert isinstance(res, str)
-    assert len(res) > 0
+def test_translate_to_portuguese_fallback_offline(monkeypatch):
+    import pytest
+    monkeypatch.setattr(ai_features, '_call_llm', lambda *a, **k: None)
+    with pytest.raises(RuntimeError, match="Tradução indisponível"):
+        ai_features.translate_to_portuguese("Hello world, this is a document.")
 
 
 

@@ -169,7 +169,7 @@ test('service worker only removes its own older cache versions', async () => {
   const handlers = {}, deleted = [];
   vm.runInNewContext(fs.readFileSync(path.join(root, 'static/sw.js'), 'utf8'), {
     self: { addEventListener: (name, fn) => handlers[name] = fn, clients: { claim: async () => {} } },
-    caches: { keys: async () => ['other-app', 'supertonic-shell-v2', 'supertonic-shell-v3'], delete: async key => deleted.push(key) },
+    caches: { keys: async () => ['other-app', 'supertonic-shell-v2', 'supertonic-shell-v4'], delete: async key => deleted.push(key) },
   });
   let pending; handlers.activate({ waitUntil: promise => pending = promise }); await pending;
   assert.deepEqual(deleted, ['supertonic-shell-v2']);
@@ -183,6 +183,7 @@ test('service worker does not cache API/audio or failed shell responses', async 
     fetch: async () => new Response('failed', { status: 503 }),
   });
   function event(url) { return { request: { method: 'GET', url }, respondWith: p => response = p, waitUntil() {} }; }
+  handlers.fetch(event('http://localhost/')); assert.equal(response, undefined);
   handlers.fetch(event('http://localhost/api/jobs/a')); assert.equal(response, undefined);
   handlers.fetch(event('http://localhost/api/jobs/a/audio')); assert.equal(response, undefined);
   handlers.fetch(event('http://localhost/static/app.js')); assert.equal((await response).status, 503);

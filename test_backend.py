@@ -59,6 +59,7 @@ s = load_server()
 
 @pytest.fixture(autouse=True)
 def isolate(tmp_path, monkeypatch):
+    monkeypatch.setenv('API_KEY', 'test-instance-key')
     for name in ('JOBS_DIR', 'CACHE_DIR', 'SHARE_DIR'):
         directory = tmp_path / name
         directory.mkdir()
@@ -185,7 +186,7 @@ def test_queued_cancel_and_worker_cleanup():
 
 
 def test_routes_and_legacy_upload(monkeypatch):
-    with TestClient(s.build_app()) as client:
+    with TestClient(s.build_app(), headers={"X-API-Key": "test-instance-key"}) as client:
         for endpoint in ('/api/jobs', '/usar'):
             response = client.post(endpoint, data={'url': 'http://localhost/secret'})
             assert response.status_code == 403
@@ -214,7 +215,7 @@ def test_bounded_queue_returns_429_and_cleans_upload(monkeypatch):
         assert release.wait(3)
         return original(*a, **k)
     monkeypatch.setattr(s, '_do_synthesize', slow)
-    with TestClient(s.build_app()) as client:
+    with TestClient(s.build_app(), headers={"X-API-Key": "test-instance-key"}) as client:
         try:
             assert client.post('/api/jobs', data={'text': 'running', 'response_format': 'wav'}).status_code == 202
             assert entered.wait(1)
@@ -275,7 +276,7 @@ def test_janitor_only_terminal(monkeypatch):
 @pytest.mark.parametrize('endpoint', ['/api/jobs', '/usar'])
 def test_http_upload_limit(endpoint, monkeypatch):
     monkeypatch.setattr(s, 'MAX_UPLOAD_MB', 0)
-    with TestClient(s.build_app()) as client:
+    with TestClient(s.build_app(), headers={"X-API-Key": "test-instance-key"}) as client:
         response = client.post(endpoint, files={'file': ('test.txt', b'x')})
         assert response.status_code == 413
         assert response.json()['error']['code'] == 'file_too_large'
@@ -290,7 +291,7 @@ def test_active_cancel_does_not_delete_running_files(monkeypatch):
         assert release.wait(3)
         return original(*a, **k)
     monkeypatch.setattr(s, '_do_synthesize', slow)
-    with TestClient(s.build_app()) as client:
+    with TestClient(s.build_app(), headers={"X-API-Key": "test-instance-key"}) as client:
         try:
             response = client.post('/api/jobs', files={'file': ('test.txt', b'active')}, data={'response_format':'wav'})
             job_id = response.json()['id']
@@ -358,7 +359,7 @@ def test_legacy_remote_transcription_contract_when_opted_in(monkeypatch):
     monkeypatch.setattr(s, '_download_media', lambda *a: '/stub')
     monkeypatch.setattr(s, '_transcribe', lambda *a: 'transcribed text')
     monkeypatch.setattr(s, '_do_synthesize', lambda *a, **k: pytest.fail('legacy URL synthesized'))
-    with TestClient(s.build_app()) as client:
+    with TestClient(s.build_app(), headers={"X-API-Key": "test-instance-key"}) as client:
         response = client.post('/usar', data={'url':'https://example.com/media'})
         assert response.status_code == 200
         assert response.json() == {'text':'transcribed text', 'truncated':False}
@@ -551,3 +552,42 @@ def test_transcribe_local_crash_reports_both_reasons(monkeypatch, tmp_path):
     with pytest.raises(s.UsarError) as e:
         s._transcribe(str(media), 'pt', lambda *a: None)
     assert e.value.code == 'transcription_failed' and '429' in e.value.message and 'MemoryError' in e.value.message
+
+
+@pytest.mark.parametrize('path', ['/', '/api/documents', '/feed.xml', '/api/feed.xml', '/api/jobs/anything', '/api/voices'])
+def test_private_routes_require_auth(path):
+    with TestClient(s.build_app()) as client:
+        response = client.get(path)
+        assert response.status_code == 401
+        assert 'Basic' in response.headers['www-authenticate']
+
+
+def test_auth_unconfigured_fails_closed(monkeypatch):
+    monkeypatch.delenv('API_KEY', raising=False)
+    with TestClient(s.build_app()) as client:
+        assert client.get('/api/documents').status_code == 503
+        assert client.get('/health').status_code == 200
+
+
+def test_basic_auth_and_csrf():
+    with TestClient(s.build_app()) as client:
+        assert client.get('/api/voices', auth=('owner','test-instance-key')).status_code == 200
+        assert client.delete('/api/jobs/no-such-job', auth=('owner','test-instance-key'), headers={'Origin':'https://evil.example'}).status_code == 403
+        assert client.get('/api/voices', headers={'Authorization':'Basic invalid!'}).status_code == 401
+
+
+def test_m4b_chapter_contract(monkeypatch):
+    import document_features
+    monkeypatch.setattr(s, 'split_chunks', lambda text: ['First paragraph.', 'Second paragraph.'])
+    monkeypatch.setattr(s, 'FFMPEG', 'ffmpeg')
+    def export(source, target, **kw):
+        assert len(kw['chapters']) == 2
+        assert kw['chapters'][0].start_ms == 0
+        assert kw['chapters'][0].end_ms == kw['chapters'][1].start_ms
+        assert kw['chapters'][1].end_ms > kw['chapters'][1].start_ms
+        Path(target).write_bytes(b'm4b-test')
+    monkeypatch.setattr(document_features, 'export_m4b', export)
+    job=s.Job(text='Example text.',format='m4b')
+    s._run_job_sync(job,state())
+    assert job.format == 'm4b'
+    assert s.audio_mime('m4b') == 'audio/mp4'

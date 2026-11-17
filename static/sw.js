@@ -1,6 +1,7 @@
 // Service worker mínimo: cacheia só a casca da UI (nunca /usar nem /v1).
-const CACHE = "supertonic-shell-v3";
-const SHELL = ["/", "/static/styles.css", "/static/app.js", "/favicon.svg", "/manifest.webmanifest"];
+const CACHE = "supertonic-shell-v4";
+// The authenticated HTML shell must always go to the network, never offline cache.
+const SHELL = ["/static/styles.css", "/static/app.js", "/favicon.svg", "/manifest.webmanifest"];
 
 self.addEventListener("install", (e) => {
   e.waitUntil(caches.open(CACHE).then((c) => c.addAll(SHELL)).then(() => self.skipWaiting()));

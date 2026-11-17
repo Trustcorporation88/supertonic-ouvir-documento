@@ -2,7 +2,8 @@
 
 Works with:
 1) Claude (ANTHROPIC_API_KEY), or OpenAI / Groq (OPENAI_API_KEY / GROQ_API_KEY), for human-grade quality.
-2) Zero-dependency offline NLP fallback (extractive summarization, smart dialog structuring, rule-based) so it always works out of the box even without any API key.
+2) Zero-dependency offline NLP fallback for summaries and podcast scripts.
+Translation requires a working AI provider and fails explicitly when unavailable.
 """
 from __future__ import annotations
 
@@ -89,6 +90,8 @@ def _call_anthropic(key: str, prompt: str, system_prompt: str, max_tokens: int) 
         "model": model, "max_tokens": max_tokens, "system": system_prompt,
         "messages": [{"role": "user", "content": prompt}],
     }, timeout=90)
+    if data.get("stop_reason") == "max_tokens":
+        raise RuntimeError("Resposta da IA interrompida pelo limite de tokens")
     text = "".join(b.get("text", "") for b in data.get("content", []) if b.get("type") == "text").strip()
     if not text:
         raise RuntimeError("Resposta vazia da Anthropic")
@@ -106,7 +109,10 @@ def _call_openai_compatible(prompt: str, system_prompt: str, max_tokens: int) ->
         "messages": [{"role": "system", "content": system_prompt}, {"role": "user", "content": prompt}],
         "temperature": 0.7, "max_tokens": max_tokens,
     }, timeout=60)
-    return data["choices"][0]["message"]["content"].strip()
+    choice = data["choices"][0]
+    if choice.get("finish_reason") == "length":
+        raise RuntimeError("Resposta da IA interrompida pelo limite de tokens")
+    return (choice["message"].get("content") or "").strip()
 
 
 def _call_llm(prompt: str, system_prompt: str, max_tokens: int = 2000) -> str | None:
@@ -124,13 +130,39 @@ def _call_llm(prompt: str, system_prompt: str, max_tokens: int = 2000) -> str | 
         return None
 
 
+def _text_batches(text: str, size: int):
+    """Yield all input in bounded batches, preferring whitespace boundaries."""
+    while text:
+        end = min(size, len(text))
+        if end < len(text):
+            boundary = text.rfind(" ", 0, end)
+            if boundary > size // 2:
+                end = boundary + 1
+        yield text[:end]
+        text = text[end:]
+
+
+def _limit_summary(text: str, max_length: int) -> str:
+    if len(text) <= max_length:
+        return text
+    if max_length <= 1:
+        return "…"[:max_length]
+    prefix = text[:max_length - 1].rstrip()
+    # Avoid cutting a word when a normal word boundary is available.
+    if " " in prefix:
+        prefix = prefix.rsplit(" ", 1)[0]
+    return prefix + "…"
+
+
 # ---------------------------------------------------------------------------
 # 1. Resumo Executivo
 # ---------------------------------------------------------------------------
 def summarize_text(text: str, max_length: int = 1500) -> str:
     """Gera um resumo executivo fluido do documento para ser narrado."""
+    if max_length < 1:
+        raise ValueError("max_length deve ser positivo")
     if not text or len(text) < 300:
-        return text
+        return _limit_summary(text, max_length)
 
     # Tenta LLM
     sys = (
@@ -139,14 +171,14 @@ def summarize_text(text: str, max_length: int = 1500) -> str:
         "O texto gerado será falado em voz alta por um narrador, portanto escreva frases naturais, sem tópicos ou asteriscos."
     )
     prompt = f"Faça um resumo executivo falado do seguinte texto:\n\n{text[:12000]}"
-    llm_res = _call_llm(prompt, sys, max_tokens=1000)
+    llm_res = _call_llm(prompt, sys, max_tokens=1000) if len(text) <= 12000 else None
     if llm_res:
-        return llm_res
+        return _limit_summary(llm_res, max_length)
 
     # Fallback algorítmico sem API key (extractive summarization)
     sentences = re.split(r"(?<=[.!?])\s+", text.strip())
     if len(sentences) <= 6:
-        return text
+        return _limit_summary(text, max_length)
 
     words = re.findall(r"\b[a-zA-ZáéíóúâêîôûãõçÁÉÍÓÚÂÊÎÔÛÃÕÇ]{3,}\b", text.lower())
     stopwords = {
@@ -171,7 +203,7 @@ def summarize_text(text: str, max_length: int = 1500) -> str:
     resumo_frases = [s for _, _, s in top]
 
     intro = "Resumo dos pontos principais do documento: "
-    return intro + " ".join(resumo_frases)
+    return _limit_summary(intro + " ".join(resumo_frases), max_length)
 
 
 # ---------------------------------------------------------------------------
@@ -203,7 +235,8 @@ def generate_podcast_script(text: str, style: str = "fun") -> str:
         "4. Duração: cerca de 6 a 12 trocas de diálogo.\n"
         "5. O idioma é Português do Brasil coloquial e inteligente."
     )
-    prompt = f"Transforme este documento em um diálogo de podcast empolgante entre [Mulher 1] e [Homem 1]:\n\n{text[:12000]}"
+    source = summarize_text(text, max_length=10000) if len(text) > 12000 else text
+    prompt = f"Transforme este documento em um diálogo de podcast empolgante entre [Mulher 1] e [Homem 1]:\n\n{source}"
     llm_res = _call_llm(prompt, sys, max_tokens=1500)
     if llm_res and ("[Mulher 1]:" in llm_res or "[Homem 1]:" in llm_res):
         return llm_res
@@ -298,6 +331,7 @@ def build_podcast_rss_feed(items: list[dict], base_url: str) -> str:
         if pub:
             try:
                 dt = datetime.fromisoformat(str(pub).replace("Z", "+00:00"))
+                dt = dt.replace(tzinfo=timezone.utc) if dt.tzinfo is None else dt.astimezone(timezone.utc)
                 ET.SubElement(item, "pubDate").text = dt.strftime("%a, %d %b %Y %H:%M:%S +0000")
             except Exception:
                 ET.SubElement(item, "pubDate").text = datetime.now(timezone.utc).strftime("%a, %d %b %Y %H:%M:%S +0000")
@@ -330,6 +364,7 @@ def parse_podcast_script(script: str, default_voice: str = "F1") -> List[Tuple[s
                 voice = male_voice if default_voice.startswith("F") else default_voice
             else:
                 voice = default_voice if default_voice.startswith("F") else "F1"
+            current_voice = voice
             chunks.append((voice, text))
         else:
             chunks.append((current_voice, line))
@@ -349,8 +384,12 @@ def translate_to_portuguese(text: str) -> str:
         "Você é um tradutor profissional especializado em verter documentos para o português do Brasil fluente, "
         "natural e adequado para narração em áudio. Mantenha os nomes próprios e termos técnicos consagrados."
     )
-    prompt = f"Traduza o seguinte texto para português do Brasil:\n\n{text[:12000]}"
-    llm_res = _call_llm(prompt, sys, max_tokens=2500)
-    if llm_res:
-        return llm_res
-    return text
+    translated = []
+    # Bound each request without discarding the remainder of a long document.
+    for chunk in _text_batches(text, 4000):
+        prompt = f"Traduza integralmente o seguinte trecho para português do Brasil, sem resumir:\n\n{chunk}"
+        llm_res = _call_llm(prompt, sys, max_tokens=4000)
+        if not llm_res or not llm_res.strip():
+            raise RuntimeError("Tradução indisponível. Configure um provedor de IA válido ou desative a tradução.")
+        translated.append(llm_res.strip())
+    return "\n\n".join(translated)
